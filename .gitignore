@@ -1,3 +1,23 @@
+# Upstream dependency SOURCE — never commit .f90 from other libraries
+# deps/lib/*.a and deps/zig/*.zig ARE committed (stripped prebuilts only)
+deps/**/src/
+deps/**/*.f90
+deps/**/*.md
+
+# Prebuilt forApollo objects (platform-specific, committed for distribution)
+# prebuilt/ is tracked — contains multi-platform .a for users who skip building
+
+# Zig build output
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+venv/
+
 # Prerequisites
 *.d
 
