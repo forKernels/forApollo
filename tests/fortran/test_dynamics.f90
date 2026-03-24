@@ -72,6 +72,28 @@ program test_dynamics
     call test_const_accel_bad_n()
     call test_const_turn_bad_n()
 
+    ! --- Vehicle dynamics tests ---
+    call test_bicycle_straight()
+    call test_bicycle_jacobian()
+    call test_ackermann_jacobian()
+    call test_diffdrive_jacobian()
+
+    ! --- Rigid body dynamics tests ---
+    call test_rigidbody_torquefree()
+    call test_rigidbody_jacobian()
+
+    ! --- Aerial dynamics tests ---
+    call test_quadrotor_hover()
+    call test_quadrotor_jacobian()
+
+    ! --- Stochastic dynamics tests ---
+    call test_gbm_drift()
+    call test_ou_mean_reversion()
+
+    ! --- Scalar dynamics tests ---
+    call test_spring_mass()
+    call test_spring_mass_jacobian()
+
     ! --- Orbital dynamics tests ---
     call test_kepler_circular_orbit()
     call test_kepler_jacobian()
@@ -463,6 +485,341 @@ contains
         end do
 
     end subroutine verify_jacobian_params
+
+    ! =========================================================================
+    ! Helper: verify analytic Jacobian against central finite difference
+    ! with actual params AND control arrays (for models that use u)
+    ! =========================================================================
+    subroutine verify_jacobian_params_ctrl(test_name, model_id_val, n_val, x, &
+                                            u_val, nu_val, params_val, np_val, tol, pass)
+        character(len=*), intent(in)  :: test_name
+        integer, intent(in)           :: model_id_val, n_val, nu_val, np_val
+        real(c_double), intent(in)    :: x(n_val), u_val(nu_val), params_val(np_val)
+        real(c_double), intent(in)    :: tol
+        logical, intent(out)          :: pass
+
+        real(c_double) :: F_analytic(n_val * n_val)
+        real(c_double) :: x_plus(n_val), x_minus(n_val)
+        real(c_double) :: f_plus(n_val), f_minus(n_val)
+        real(c_double) :: F_fd_col(n_val)
+        real(c_double) :: h, diff, scale_h
+        integer(c_int) :: info
+        integer :: i, j
+
+        ! Get analytic Jacobian
+        call fa_dynamics_jacobian(model_id_val, n_val, x, u_val, nu_val, 0.0d0, &
+                                   params_val, np_val, F_analytic, info)
+        if (info /= 0) then
+            write(*,'(A,A,A,I0)') '  FAIL [', test_name, &
+                '] analytic Jacobian returned info=', info
+            pass = .false.
+            return
+        end if
+
+        pass = .true.
+
+        ! Central finite difference for each column j
+        do j = 1, n_val
+            scale_h = max(abs(x(j)), 1.0d0)
+            h = 1.0d-7 * scale_h
+
+            x_plus(1:n_val)  = x(1:n_val)
+            x_minus(1:n_val) = x(1:n_val)
+            x_plus(j)  = x(j) + h
+            x_minus(j) = x(j) - h
+
+            call fa_dynamics_dispatch(model_id_val, n_val, x_plus, u_val, nu_val, &
+                                       0.0d0, params_val, np_val, f_plus, info)
+            call fa_dynamics_dispatch(model_id_val, n_val, x_minus, u_val, nu_val, &
+                                       0.0d0, params_val, np_val, f_minus, info)
+
+            F_fd_col(1:n_val) = (f_plus(1:n_val) - f_minus(1:n_val)) / (2.0d0 * h)
+
+            do i = 1, n_val
+                diff = abs(F_analytic((i-1)*n_val + j) - F_fd_col(i))
+                if (diff > tol * max(abs(F_analytic((i-1)*n_val+j)), abs(F_fd_col(i)), 1.0d0)) then
+                    write(*,'(A,A,A,I0,A,I0,A,ES14.7,A,ES14.7,A,ES10.3)') &
+                        '  FAIL [', test_name, '] F(', i, ',', j, &
+                        '): analytic=', F_analytic((i-1)*n_val + j), &
+                        ' fd=', F_fd_col(i), ' diff=', diff
+                    pass = .false.
+                end if
+            end do
+        end do
+
+    end subroutine verify_jacobian_params_ctrl
+
+    ! =========================================================================
+    ! Test: Bicycle straight line
+    ! v=10, theta=0, steer_rate=0, accel=0 → x_dot=[10,0,0,0]
+    ! =========================================================================
+    subroutine test_bicycle_straight()
+        real(c_double) :: x(4), x_dot(4), expected(4)
+        real(c_double) :: u(2), params(1)
+        integer(c_int) :: info
+        logical :: pass
+
+        x = [0.0d0, 0.0d0, 0.0d0, 10.0d0]    ! [x, y, theta, v]
+        u = [0.0d0, 0.0d0]                     ! [accel, steer_rate]
+        params(1) = 2.5d0                       ! wheelbase L
+        expected = [10.0d0, 0.0d0, 0.0d0, 0.0d0]
+
+        call fa_dynamics_dispatch(20, 4, x, u, 2, 0.0d0, params, 1, x_dot, info)
+
+        pass = (info == 0)
+        if (pass) call check_vec('bicycle_straight', 4, x_dot, expected, 1.0d-14, pass)
+        call report('bicycle_straight', pass)
+    end subroutine test_bicycle_straight
+
+    ! =========================================================================
+    ! Test: Bicycle Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_bicycle_jacobian()
+        real(c_double) :: x(4), u(2), params(1)
+        logical :: pass
+
+        x = [1.0d0, 2.0d0, 0.3d0, 8.0d0]     ! nonzero theta and v
+        u = [1.0d0, 0.2d0]
+        params(1) = 2.5d0
+
+        call verify_jacobian_params_ctrl('bicycle_jacobian', 20, 4, x, u, 2, params, 1, 1.0d-5, pass)
+        call report('bicycle_jacobian', pass)
+    end subroutine test_bicycle_jacobian
+
+    ! =========================================================================
+    ! Test: Ackermann Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_ackermann_jacobian()
+        real(c_double) :: x(5), u(2), params(1)
+        logical :: pass
+
+        x = [1.0d0, 2.0d0, 0.3d0, 5.0d0, 0.1d0]  ! nonzero steer angle
+        u = [0.5d0, 0.1d0]
+        params(1) = 2.7d0    ! wheelbase
+
+        call verify_jacobian_params_ctrl('ackermann_jacobian', 21, 5, x, u, 2, params, 1, 1.0d-5, pass)
+        call report('ackermann_jacobian', pass)
+    end subroutine test_ackermann_jacobian
+
+    ! =========================================================================
+    ! Test: Differential drive Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_diffdrive_jacobian()
+        real(c_double) :: x(4), u(2), params(1)
+        logical :: pass
+
+        x = [1.0d0, 2.0d0, 0.5d0, 3.0d0]
+        u = [1.0d0, 1.5d0]        ! left/right wheel velocities
+        params(1) = 0.5d0          ! wheel separation
+
+        call verify_jacobian_params_ctrl('diffdrive_jacobian', 22, 4, x, u, 2, params, 1, 1.0d-5, pass)
+        call report('diffdrive_jacobian', pass)
+    end subroutine test_diffdrive_jacobian
+
+    ! =========================================================================
+    ! Test: 6-DOF rigid body torque-free spin
+    ! omega=[0,0,1], no forces/torques → omega_dot=0, quat rotates
+    ! =========================================================================
+    subroutine test_rigidbody_torquefree()
+        real(c_double) :: x(13), x_dot(13), u(6), params(4)
+        integer(c_int) :: info
+        logical :: pass
+
+        ! State: at origin, no velocity, identity quaternion, spinning about z
+        x = [0.0d0, 0.0d0, 0.0d0, &      ! position
+             0.0d0, 0.0d0, 0.0d0, &       ! velocity
+             1.0d0, 0.0d0, 0.0d0, 0.0d0, & ! quaternion (identity)
+             0.0d0, 0.0d0, 1.0d0]          ! omega = [0,0,1]
+
+        u = [0.0d0, 0.0d0, 0.0d0, 0.0d0, 0.0d0, 0.0d0]  ! no forces/torques
+        params = [10.0d0, 1.0d0, 1.0d0, 1.0d0]  ! mass=10, Ixx=Iyy=Izz=1 (sphere)
+
+        call fa_dynamics_dispatch(10, 13, x, u, 6, 0.0d0, params, 4, x_dot, info)
+
+        pass = (info == 0)
+
+        ! omega_dot should be zero (torque-free, symmetric body)
+        if (pass .and. abs(x_dot(11)) > 1.0d-14) pass = .false.
+        if (pass .and. abs(x_dot(12)) > 1.0d-14) pass = .false.
+        if (pass .and. abs(x_dot(13)) > 1.0d-14) pass = .false.
+
+        ! Quaternion should be rotating: q_dot = 0.5*q(*)[0,0,0,1]
+        ! q=[1,0,0,0], omega=[0,0,1]
+        ! q0_dot = -0.5*(0+0+0) = 0
+        ! q3_dot = 0.5*(0+0+1*1) = 0.5
+        if (pass .and. abs(x_dot(7) - 0.0d0) > 1.0d-14) pass = .false.
+        if (pass .and. abs(x_dot(10) - 0.5d0) > 1.0d-14) pass = .false.
+
+        call report('rigidbody_torquefree', pass)
+    end subroutine test_rigidbody_torquefree
+
+    ! =========================================================================
+    ! Test: 6-DOF rigid body Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_rigidbody_jacobian()
+        real(c_double) :: x(13), u(6), params(4)
+        logical :: pass
+
+        ! General state with nonzero quaternion and angular velocity
+        x = [1.0d0, 2.0d0, 3.0d0, &        ! position
+             0.1d0, -0.2d0, 0.3d0, &        ! velocity
+             0.5d0, 0.5d0, 0.5d0, 0.5d0, &  ! quaternion (normalized)
+             0.1d0, 0.2d0, 0.3d0]           ! omega
+
+        u = [1.0d0, 0.5d0, -0.3d0, 0.1d0, -0.1d0, 0.2d0]  ! forces and torques
+        params = [10.0d0, 2.0d0, 3.0d0, 4.0d0]  ! mass, Ixx, Iyy, Izz
+
+        call verify_jacobian_params_ctrl('rigidbody_jacobian', 10, 13, x, u, 6, params, 4, 1.0d-5, pass)
+        call report('rigidbody_jacobian', pass)
+    end subroutine test_rigidbody_jacobian
+
+    ! =========================================================================
+    ! Test: Quadrotor hover
+    ! thrust=mass*g, zero angles/rates → v_dot ≈ [0,0,0]
+    ! =========================================================================
+    subroutine test_quadrotor_hover()
+        real(c_double) :: x(12), x_dot(12), u(4), params(5)
+        integer(c_int) :: info
+        logical :: pass
+        real(c_double) :: mass, g
+
+        mass = 1.5d0
+        g    = 9.81d0
+
+        ! Hovering: zero position, zero velocity, zero angles, zero body rates
+        x = [0.0d0, 0.0d0, 1.0d0, &   ! position (1m altitude)
+             0.0d0, 0.0d0, 0.0d0, &   ! velocity = 0
+             0.0d0, 0.0d0, 0.0d0, &   ! phi, theta, psi = 0
+             0.0d0, 0.0d0, 0.0d0]     ! p, q, r = 0
+
+        u = [mass*g, 0.0d0, 0.0d0, 0.0d0]  ! thrust = weight, no torques
+        params = [mass, 0.01d0, 0.01d0, 0.02d0, g]  ! mass, Ixx, Iyy, Izz, g
+
+        call fa_dynamics_dispatch(30, 12, x, u, 4, 0.0d0, params, 5, x_dot, info)
+
+        pass = (info == 0)
+
+        ! velocity derivatives should be approximately zero (hover)
+        if (pass .and. abs(x_dot(4)) > 1.0d-10) then
+            write(*,'(A,ES14.7)') '  FAIL [quadrotor_hover] vx_dot=', x_dot(4)
+            pass = .false.
+        end if
+        if (pass .and. abs(x_dot(5)) > 1.0d-10) then
+            write(*,'(A,ES14.7)') '  FAIL [quadrotor_hover] vy_dot=', x_dot(5)
+            pass = .false.
+        end if
+        if (pass .and. abs(x_dot(6)) > 1.0d-10) then
+            write(*,'(A,ES14.7)') '  FAIL [quadrotor_hover] vz_dot=', x_dot(6)
+            pass = .false.
+        end if
+
+        call report('quadrotor_hover', pass)
+    end subroutine test_quadrotor_hover
+
+    ! =========================================================================
+    ! Test: Quadrotor Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_quadrotor_jacobian()
+        real(c_double) :: x(12), u(4), params(5)
+        logical :: pass
+
+        ! General state with small angles and rates to avoid singularity
+        x = [1.0d0, 2.0d0, 3.0d0, &      ! position
+             0.5d0, -0.3d0, 0.1d0, &      ! velocity
+             0.1d0, 0.05d0, 0.2d0, &      ! phi, theta, psi (small angles)
+             0.01d0, -0.02d0, 0.03d0]     ! p, q, r
+
+        u = [15.0d0, 0.1d0, -0.05d0, 0.02d0]
+        params = [1.5d0, 0.01d0, 0.01d0, 0.02d0, 9.81d0]
+
+        call verify_jacobian_params_ctrl('quadrotor_jacobian', 30, 12, x, u, 4, params, 5, 1.0d-4, pass)
+        call report('quadrotor_jacobian', pass)
+    end subroutine test_quadrotor_jacobian
+
+    ! =========================================================================
+    ! Test: GBM drift
+    ! S=100, mu=0.05 → x_dot = 5.0
+    ! =========================================================================
+    subroutine test_gbm_drift()
+        real(c_double) :: x(1), x_dot(1), params(2)
+        real(c_double) :: dummy_u(1)
+        integer(c_int) :: info
+        logical :: pass
+
+        x(1) = 100.0d0
+        params = [0.05d0, 0.2d0]     ! mu_drift=0.05, sigma=0.2
+        dummy_u(1) = 0.0d0
+
+        call fa_dynamics_dispatch(50, 1, x, dummy_u, 1, 0.0d0, params, 2, x_dot, info)
+
+        pass = (info == 0)
+        if (pass .and. abs(x_dot(1) - 5.0d0) > 1.0d-14) then
+            write(*,'(A,ES14.7)') '  FAIL [gbm_drift] x_dot=', x_dot(1)
+            pass = .false.
+        end if
+        call report('gbm_drift', pass)
+    end subroutine test_gbm_drift
+
+    ! =========================================================================
+    ! Test: Ornstein-Uhlenbeck mean reversion
+    ! X=110, theta=0.5, mu=100 → x_dot = 0.5*(100-110) = -5.0
+    ! =========================================================================
+    subroutine test_ou_mean_reversion()
+        real(c_double) :: x(1), x_dot(1), params(3)
+        real(c_double) :: dummy_u(1)
+        integer(c_int) :: info
+        logical :: pass
+
+        x(1) = 110.0d0
+        params = [0.5d0, 100.0d0, 0.3d0]   ! theta=0.5, mu=100, sigma=0.3
+        dummy_u(1) = 0.0d0
+
+        call fa_dynamics_dispatch(51, 1, x, dummy_u, 1, 0.0d0, params, 3, x_dot, info)
+
+        pass = (info == 0)
+        if (pass .and. abs(x_dot(1) - (-5.0d0)) > 1.0d-14) then
+            write(*,'(A,ES14.7)') '  FAIL [ou_mean_reversion] x_dot=', x_dot(1)
+            pass = .false.
+        end if
+        call report('ou_mean_reversion', pass)
+    end subroutine test_ou_mean_reversion
+
+    ! =========================================================================
+    ! Test: Spring-mass-damper
+    ! x=1, v=0, k=10, c=1, m=1, F=0 → x_dot=[0, -10]
+    ! =========================================================================
+    subroutine test_spring_mass()
+        real(c_double) :: x(2), x_dot(2), expected(2)
+        real(c_double) :: u(1), params(3)
+        integer(c_int) :: info
+        logical :: pass
+
+        x = [1.0d0, 0.0d0]        ! x=1, v=0
+        u(1) = 0.0d0              ! no external force
+        params = [10.0d0, 1.0d0, 1.0d0]   ! k=10, c=1, m=1
+        expected = [0.0d0, -10.0d0]  ! v_dot = (0 - 10*1 - 1*0)/1 = -10
+
+        call fa_dynamics_dispatch(61, 2, x, u, 1, 0.0d0, params, 3, x_dot, info)
+
+        pass = (info == 0)
+        if (pass) call check_vec('spring_mass', 2, x_dot, expected, 1.0d-14, pass)
+        call report('spring_mass', pass)
+    end subroutine test_spring_mass
+
+    ! =========================================================================
+    ! Test: Spring-mass-damper Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_spring_mass_jacobian()
+        real(c_double) :: x(2), u(1), params(3)
+        logical :: pass
+
+        x = [0.5d0, 1.0d0]
+        u(1) = 2.0d0
+        params = [10.0d0, 1.0d0, 2.0d0]   ! k=10, c=1, m=2
+
+        call verify_jacobian_params_ctrl('spring_mass_jacobian', 61, 2, x, u, 1, params, 3, 1.0d-5, pass)
+        call report('spring_mass_jacobian', pass)
+    end subroutine test_spring_mass_jacobian
 
     ! =========================================================================
     ! Test: Kepler circular orbit
