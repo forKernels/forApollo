@@ -2102,3 +2102,1044 @@ subroutine fa_srukf_update(n, m, x, S, z, h_ptr, obs_id, R, obs_params, nop, &
     deallocate(P, ST)
 
 end subroutine fa_srukf_update
+
+
+
+! ==========================================================================
+! fa_lcg_normal — Simple LCG pseudo-random normal variate generator
+!
+! Uses linear congruential generator + Box-Muller transform.
+! No external dependencies. For particle filter process noise.
+! Seed is modified in-place for sequential draws.
+! ==========================================================================
+subroutine fa_lcg_normal(seed, z_out)
+    use iso_c_binding
+    implicit none
+    integer(c_int), intent(inout) :: seed
+    real(c_double), intent(out)   :: z_out
+    real(c_double) :: u1, u2, pi_val
+
+    pi_val = 3.14159265358979323846d0
+
+    seed = mod(seed * 1103515245 + 12345, 2147483647)
+    if (seed < 0) seed = seed + 2147483647
+    u1 = (dble(seed) + 0.5d0) / 2147483647.0d0
+
+    seed = mod(seed * 1103515245 + 12345, 2147483647)
+    if (seed < 0) seed = seed + 2147483647
+    u2 = (dble(seed) + 0.5d0) / 2147483647.0d0
+
+    if (u1 < 1.0d-15) u1 = 1.0d-15
+    if (u1 > 1.0d0 - 1.0d-15) u1 = 1.0d0 - 1.0d-15
+
+    z_out = sqrt(-2.0d0 * log(u1)) * cos(2.0d0 * pi_val * u2)
+end subroutine fa_lcg_normal
+
+
+! ==========================================================================
+! fa_if_predict — Information Filter predict step
+!
+! Converts from information form (eta, Ymat) to covariance form,
+! runs standard KF predict, converts back.
+! eta(n) = Y * x (information state vector)
+! Ymat(n*n) = P^-1 (information matrix), flat row-major
+!
+! Algorithm (via covariance form for numerical stability):
+!   P = Ymat^-1, x = P * eta
+!   x = F*x, P = F*P*F^T + Q
+!   Ymat = P^-1, eta = Ymat * x
+!
+! info = 0 ok, 2 not positive definite, 3 invalid input
+! ==========================================================================
+subroutine fa_if_predict(n, eta, Ymat, F, Q, info) bind(C, name="fa_if_predict")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n
+    real(c_double), intent(inout)      :: eta(n)
+    real(c_double), intent(inout)      :: Ymat(n*n)
+    real(c_double), intent(in)         :: F(n*n)
+    real(c_double), intent(in)         :: Q(n*n)
+    integer(c_int), intent(out)        :: info
+
+    interface
+        subroutine fa_kf_predict(n, x, P, F, Q, info) bind(C, name="fa_kf_predict")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(inout)      :: P(n*n)
+            real(c_double), intent(in)         :: F(n*n)
+            real(c_double), intent(in)         :: Q(n*n)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: P(:), x(:), P_inv(:), Ycopy(:)
+    integer :: nn, solve_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0) then
+        info = 3
+        return
+    end if
+
+    allocate(P(nn), x(n), P_inv(nn), Ycopy(nn))
+
+    ! Convert information form to covariance form
+    ! P = Ymat^-1: solve Ymat * P = I (need copy since solve modifies A)
+    Ycopy(1:nn) = Ymat(1:nn)
+    call mat_identity(P, n)
+    call mat_solve_symm(Ycopy, P, n, n, solve_info)
+    if (solve_info /= 0) then
+        info = 2
+        deallocate(P, x, P_inv, Ycopy)
+        return
+    end if
+
+    ! x = P * eta
+    call mat_vec_multiply(P, eta, x, n, n)
+
+    ! Run standard KF predict: x = F*x, P = F*P*F^T + Q
+    call fa_kf_predict(n, x, P, F, Q, info)
+    if (info /= 0) then
+        deallocate(P, x, P_inv, Ycopy)
+        return
+    end if
+
+    ! Convert back to information form
+    ! Ymat = P^-1: solve P * Ymat_new = I
+    call mat_identity(P_inv, n)
+    Ycopy(1:nn) = P(1:nn)
+    call mat_solve_symm(Ycopy, P_inv, n, n, solve_info)
+    if (solve_info /= 0) then
+        info = 2
+        deallocate(P, x, P_inv, Ycopy)
+        return
+    end if
+    Ymat(1:nn) = P_inv(1:nn)
+
+    ! eta = Ymat * x
+    call mat_vec_multiply(Ymat, x, eta, n, n)
+
+    deallocate(P, x, P_inv, Ycopy)
+
+end subroutine fa_if_predict
+
+
+! ==========================================================================
+! fa_if_update — Information Filter update step
+!
+! The elegance of the information filter: updates are ADDITIVE.
+!   Ymat_new = Ymat + H^T * R^-1 * H
+!   eta_new  = eta  + H^T * R^-1 * z
+!
+! This makes multi-sensor fusion trivial — just add each sensor's
+! contribution independently.
+!
+! Ternary gating: convert to covariance form temporarily to check
+! innovation chi-squared. Only fuse measurements that pass gating.
+!
+! info = 0 ok, 2 not positive definite, 3 invalid input, 4 solve failure
+! ==========================================================================
+subroutine fa_if_update(n, m, eta, Ymat, z, H, R, validity, info) &
+    bind(C, name="fa_if_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m
+    real(c_double), intent(inout)      :: eta(n)
+    real(c_double), intent(inout)      :: Ymat(n*n)
+    real(c_double), intent(in)         :: z(m)
+    real(c_double), intent(in)         :: H(m*n)
+    real(c_double), intent(in)         :: R(m*m)
+    integer(c_int), intent(out)        :: validity(m)
+    integer(c_int), intent(out)        :: info
+
+    real(c_double), allocatable :: P(:), x(:), z_pred(:), innov(:), S(:)
+    real(c_double), allocatable :: HT(:), PH(:), Ycopy(:), Rcopy(:)
+    real(c_double) :: chi2
+    integer :: nn, mm, i, solve_info
+    integer :: n_valid
+
+    info = 0
+    nn = n * n
+    mm = m * m
+
+    if (n <= 0 .or. m <= 0) then
+        info = 3
+        return
+    end if
+
+    ! --- Ternary gating requires covariance form ---
+    allocate(P(nn), x(n), z_pred(m), innov(m), S(mm))
+    allocate(HT(n*m), PH(n*m), Ycopy(nn), Rcopy(mm))
+
+    ! P = Ymat^-1
+    Ycopy(1:nn) = Ymat(1:nn)
+    call mat_identity(P, n)
+    call mat_solve_symm(Ycopy, P, n, n, solve_info)
+    if (solve_info /= 0) then
+        info = 2
+        deallocate(P, x, z_pred, innov, S, HT, PH, Ycopy, Rcopy)
+        return
+    end if
+
+    ! x = P * eta
+    call mat_vec_multiply(P, eta, x, n, n)
+
+    ! z_pred = H * x
+    call mat_vec_multiply(H, x, z_pred, m, n)
+
+    ! innovation: innov = z - z_pred
+    innov(1:m) = z(1:m) - z_pred(1:m)
+
+    ! S = H * P * H^T + R
+    call mat_transpose(H, HT, m, n)
+    call mat_multiply(P, HT, PH, n, n, m)
+    call mat_multiply(H, PH, S, m, n, m)
+    call mat_add(S, R, S, m, m)
+
+    ! Ternary gating per measurement
+    validity(1:m) = 1
+    do i = 1, m
+        if (S((i-1)*m + i) > 0.0d0) then
+            chi2 = innov(i) * innov(i) / S((i-1)*m + i)
+        else
+            chi2 = 999.0d0
+        end if
+        if (chi2 > 16.0d0) then
+            validity(i) = -1
+        else if (chi2 > 9.0d0) then
+            validity(i) = 0
+        end if
+    end do
+
+    n_valid = 0
+    do i = 1, m
+        if (validity(i) == 1) n_valid = n_valid + 1
+    end do
+
+    if (n_valid == 0) then
+        deallocate(P, x, z_pred, innov, S, HT, PH, Ycopy, Rcopy)
+        return
+    end if
+
+    ! --- Information filter additive update with valid measurements ---
+    block
+        real(c_double), allocatable :: Hv(:), Rv(:), zv(:), Rv_inv(:)
+        real(c_double), allocatable :: HvT(:), HvT_Ri(:), HvT_Ri_Hv(:), HvT_Ri_zv(:)
+        integer :: row_out, col_out, j
+
+        allocate(Hv(n_valid * n), Rv(n_valid * n_valid), zv(n_valid))
+        allocate(Rv_inv(n_valid * n_valid))
+        allocate(HvT(n * n_valid), HvT_Ri(n * n_valid))
+        allocate(HvT_Ri_Hv(nn), HvT_Ri_zv(n))
+
+        ! Extract valid rows of H and z
+        row_out = 0
+        do i = 1, m
+            if (validity(i) == 1) then
+                row_out = row_out + 1
+                zv(row_out) = z(i)
+                do j = 1, n
+                    Hv((row_out - 1) * n + j) = H((i - 1) * n + j)
+                end do
+            end if
+        end do
+
+        ! Extract valid sub-matrix of R
+        Rv(1:n_valid*n_valid) = 0.0d0
+        row_out = 0
+        do i = 1, m
+            if (validity(i) /= 1) cycle
+            row_out = row_out + 1
+            col_out = 0
+            do j = 1, m
+                if (validity(j) /= 1) cycle
+                col_out = col_out + 1
+                Rv((row_out - 1) * n_valid + col_out) = R((i - 1) * m + j)
+            end do
+        end do
+
+        ! Rv_inv = Rv^-1
+        call mat_identity(Rv_inv, n_valid)
+        block
+            real(c_double), allocatable :: Rv_copy(:)
+            allocate(Rv_copy(n_valid * n_valid))
+            Rv_copy(1:n_valid*n_valid) = Rv(1:n_valid*n_valid)
+            call mat_solve_symm(Rv_copy, Rv_inv, n_valid, n_valid, solve_info)
+            deallocate(Rv_copy)
+        end block
+        if (solve_info /= 0) then
+            info = 4
+            deallocate(Hv, Rv, zv, Rv_inv, HvT, HvT_Ri, HvT_Ri_Hv, HvT_Ri_zv)
+            deallocate(P, x, z_pred, innov, S, HT, PH, Ycopy, Rcopy)
+            return
+        end if
+
+        ! HvT = Hv^T (n x n_valid)
+        call mat_transpose(Hv, HvT, n_valid, n)
+
+        ! HvT_Ri = HvT * Rv_inv (n x n_valid)
+        call mat_multiply(HvT, Rv_inv, HvT_Ri, n, n_valid, n_valid)
+
+        ! Ymat += HvT * Rv_inv * Hv
+        call mat_multiply(HvT_Ri, Hv, HvT_Ri_Hv, n, n_valid, n)
+        call mat_add(Ymat, HvT_Ri_Hv, Ymat, n, n)
+
+        ! eta += HvT * Rv_inv * zv
+        call mat_vec_multiply(HvT_Ri, zv, HvT_Ri_zv, n, n_valid)
+        do i = 1, n
+            eta(i) = eta(i) + HvT_Ri_zv(i)
+        end do
+
+        deallocate(Hv, Rv, zv, Rv_inv, HvT, HvT_Ri, HvT_Ri_Hv, HvT_Ri_zv)
+    end block
+
+    deallocate(P, x, z_pred, innov, S, HT, PH, Ycopy, Rcopy)
+
+end subroutine fa_if_update
+
+
+! ==========================================================================
+! fa_pf_sir_predict — SIR Particle Filter predict step
+!
+! Propagates each particle through dynamics model + process noise.
+! particles(n * n_particles) — flat array, particle i at offset (i-1)*n
+! weights(n_particles) — particle weights (unchanged by predict)
+!
+! Process noise: adds Cholesky(Q) * randn to each particle after propagation.
+! Uses fa_lcg_normal for pseudo-random numbers (no external deps).
+!
+! info = 0 ok, 3 invalid input, 4 propagation failure
+! ==========================================================================
+subroutine fa_pf_sir_predict(n, n_particles, particles, weights, &
+                              f_ptr, model_id, params, np, Q, dt, n_steps, seed, info) &
+    bind(C, name="fa_pf_sir_predict")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, n_particles, model_id, np, n_steps
+    real(c_double), intent(inout)      :: particles(n * n_particles)
+    real(c_double), intent(inout)      :: weights(n_particles)
+    type(c_funptr), value              :: f_ptr
+    real(c_double), intent(in)         :: params(np)
+    real(c_double), intent(in)         :: Q(n*n)
+    real(c_double), value, intent(in)  :: dt
+    integer(c_int), intent(inout)      :: seed
+    integer(c_int), intent(out)        :: info
+
+    interface
+        subroutine fa_propagate(n, x, u, nu, f_ptr, model_id, params, np, dt, n_steps, info) &
+            bind(C, name="fa_propagate")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, nu, model_id, np, n_steps
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(in)         :: u(nu), params(np)
+            real(c_double), value, intent(in)  :: dt
+            type(c_funptr), value              :: f_ptr
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: L(:), noise(:), noise_out(:)
+    real(c_double) :: u_dummy(1), s, z_rng
+    integer :: i, j, k, r, offset, nn, chol_info, prop_info
+    integer :: local_seed
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0 .or. n_particles <= 0) then
+        info = 3
+        return
+    end if
+
+    ! Cholesky of Q for noise generation
+    allocate(L(nn), noise(n), noise_out(n))
+    L(1:nn) = 0.0d0
+    call mat_cholesky(Q, L, n, chol_info)
+    ! If Q is zero or not PD, skip noise (deterministic propagation is valid for testing)
+
+    u_dummy(1) = 0.0d0
+    local_seed = seed
+
+    ! Propagate each particle through dynamics + add process noise
+    do i = 1, n_particles
+        offset = (i - 1) * n
+
+        ! Propagate particle through dynamics
+        call fa_propagate(n, particles(offset+1), u_dummy, 0, f_ptr, model_id, &
+                          params, np, dt, n_steps, prop_info)
+        if (prop_info /= 0) then
+            info = 4
+            deallocate(L, noise, noise_out)
+            seed = local_seed
+            return
+        end if
+
+        ! Add process noise if Q is PD
+        if (chol_info == 0) then
+            ! Use per-particle seed for reproducibility
+            local_seed = seed + i * 1000003
+            do j = 1, n
+                call fa_lcg_normal(local_seed, z_rng)
+                noise(j) = z_rng
+            end do
+            ! noise_out = L * noise
+            do r = 1, n
+                s = 0.0d0
+                do k = 1, n
+                    s = s + L((r-1)*n + k) * noise(k)
+                end do
+                noise_out(r) = s
+            end do
+            do j = 1, n
+                particles(offset + j) = particles(offset + j) + noise_out(j)
+            end do
+        end if
+    end do
+
+    seed = local_seed
+    deallocate(L, noise, noise_out)
+
+end subroutine fa_pf_sir_predict
+
+
+! ==========================================================================
+! fa_pf_sir_update — SIR Particle Filter update (weight update)
+!
+! For each particle: compute z_pred = h(x_i)
+! Update weight: w_i *= exp(-0.5 * (z-z_pred)^T * R^-1 * (z-z_pred))
+! Normalize weights to sum to 1.
+!
+! Uses built-in observation model (obs_id) or custom function pointer (h_ptr).
+! info = 0 ok, 3 invalid input, 4 observation/solve failure
+! ==========================================================================
+subroutine fa_pf_sir_update(n, m, n_particles, particles, weights, &
+                             z, h_ptr, obs_id, R, obs_params, nop, info) &
+    bind(C, name="fa_pf_sir_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, n_particles, obs_id, nop
+    real(c_double), intent(in)         :: particles(n * n_particles)
+    real(c_double), intent(inout)      :: weights(n_particles)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    integer(c_int), intent(out)        :: info
+
+    interface
+        subroutine fa_observe_dispatch(obs_id, n, x, m, t, obs_params, nop, z_pred, info) &
+            bind(C, name="fa_observe_dispatch")
+            use iso_c_binding
+            integer(c_int), value  :: obs_id, n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    abstract interface
+        subroutine custom_observe_pf_t(n, x, m, t, obs_params, nop, z_pred, info) bind(C)
+            use iso_c_binding
+            integer(c_int), value  :: n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    procedure(custom_observe_pf_t), pointer :: h_custom
+    logical :: use_custom_h
+
+    real(c_double), allocatable :: R_inv(:), z_pred(:), innov_v(:), R_inv_innov(:)
+    real(c_double), allocatable :: log_liks(:), Rcopy(:)
+    real(c_double) :: log_lik, w_sum, max_log_lik
+    integer :: i, j, offset, mm, obs_info, solve_info
+
+    info = 0
+    mm = m * m
+
+    if (n <= 0 .or. m <= 0 .or. n_particles <= 0) then
+        info = 3
+        return
+    end if
+
+    use_custom_h = c_associated(h_ptr)
+    if (use_custom_h) call c_f_procpointer(h_ptr, h_custom)
+
+    ! Compute R^-1
+    allocate(R_inv(mm), Rcopy(mm))
+    Rcopy(1:mm) = R(1:mm)
+    call mat_identity(R_inv, m)
+    call mat_solve_symm(Rcopy, R_inv, m, m, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        deallocate(R_inv, Rcopy)
+        return
+    end if
+
+    allocate(z_pred(m), innov_v(m), R_inv_innov(m), log_liks(n_particles))
+
+    ! Compute log-likelihood for each particle
+    do i = 1, n_particles
+        offset = (i - 1) * n
+
+        ! Compute predicted measurement z_pred = h(x_i)
+        if (use_custom_h) then
+            call h_custom(n, particles(offset+1), m, 0.0d0, obs_params, nop, z_pred, obs_info)
+        else
+            call fa_observe_dispatch(obs_id, n, particles(offset+1), m, 0.0d0, &
+                                     obs_params, nop, z_pred, obs_info)
+        end if
+        if (obs_info /= 0) then
+            info = 4
+            deallocate(R_inv, Rcopy, z_pred, innov_v, R_inv_innov, log_liks)
+            return
+        end if
+
+        ! Innovation
+        innov_v(1:m) = z(1:m) - z_pred(1:m)
+
+        ! log_lik = -0.5 * innov^T * R^-1 * innov
+        call mat_vec_multiply(R_inv, innov_v, R_inv_innov, m, m)
+        log_lik = 0.0d0
+        do j = 1, m
+            log_lik = log_lik + innov_v(j) * R_inv_innov(j)
+        end do
+        log_liks(i) = -0.5d0 * log_lik
+    end do
+
+    ! Numerically stable weight update using log-sum-exp trick
+    max_log_lik = log_liks(1)
+    do i = 2, n_particles
+        if (log_liks(i) > max_log_lik) max_log_lik = log_liks(i)
+    end do
+
+    w_sum = 0.0d0
+    do i = 1, n_particles
+        weights(i) = weights(i) * exp(log_liks(i) - max_log_lik)
+        w_sum = w_sum + weights(i)
+    end do
+
+    ! Normalize weights
+    if (w_sum > 0.0d0) then
+        do i = 1, n_particles
+            weights(i) = weights(i) / w_sum
+        end do
+    else
+        ! All weights collapsed — uniform reset
+        do i = 1, n_particles
+            weights(i) = 1.0d0 / dble(n_particles)
+        end do
+    end if
+
+    deallocate(R_inv, Rcopy, z_pred, innov_v, R_inv_innov, log_liks)
+
+end subroutine fa_pf_sir_update
+
+
+! ==========================================================================
+! fa_pf_sir_resample — Systematic resampling for SIR particle filter
+!
+! Systematic resampling (inherently sequential):
+!   u = uniform(0, 1/N) — single random draw
+!   For i=1..N: while cumsum(weights) < u + (i-1)/N, advance index
+!   Copy selected particles, reset weights to 1/N
+!
+! info = 0 ok, 3 invalid input
+! ==========================================================================
+subroutine fa_pf_sir_resample(n, n_particles, particles, weights, seed, info) &
+    bind(C, name="fa_pf_sir_resample")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, n_particles
+    real(c_double), intent(inout)      :: particles(n * n_particles)
+    real(c_double), intent(inout)      :: weights(n_particles)
+    integer(c_int), intent(inout)      :: seed
+    integer(c_int), intent(out)        :: info
+
+    real(c_double), allocatable :: cumsum_w(:), particles_new(:)
+    real(c_double) :: u0, u_i, inv_N
+    integer :: i, j, idx, offset_src, offset_dst
+
+    info = 0
+
+    if (n <= 0 .or. n_particles <= 0) then
+        info = 3
+        return
+    end if
+
+    allocate(cumsum_w(n_particles), particles_new(n * n_particles))
+
+    ! Build cumulative sum of weights
+    cumsum_w(1) = weights(1)
+    do i = 2, n_particles
+        cumsum_w(i) = cumsum_w(i-1) + weights(i)
+    end do
+
+    ! Generate single uniform draw u0 in [0, 1/N)
+    seed = mod(seed * 1103515245 + 12345, 2147483647)
+    if (seed < 0) seed = seed + 2147483647
+    inv_N = 1.0d0 / dble(n_particles)
+    u0 = (dble(seed) / 2147483647.0d0) * inv_N
+
+    ! Systematic resampling
+    idx = 1
+    do i = 1, n_particles
+        u_i = u0 + dble(i - 1) * inv_N
+
+        do while (idx < n_particles .and. cumsum_w(idx) < u_i)
+            idx = idx + 1
+        end do
+
+        offset_src = (idx - 1) * n
+        offset_dst = (i - 1) * n
+        do j = 1, n
+            particles_new(offset_dst + j) = particles(offset_src + j)
+        end do
+    end do
+
+    ! Copy back and reset weights
+    particles(1:n*n_particles) = particles_new(1:n*n_particles)
+    do i = 1, n_particles
+        weights(i) = inv_N
+    end do
+
+    deallocate(cumsum_w, particles_new)
+
+end subroutine fa_pf_sir_resample
+
+
+! ==========================================================================
+! fa_pf_rb_update — Rao-Blackwellized Particle Filter update (STUB)
+!
+! Rao-Blackwellization partitions the state into linear and nonlinear
+! parts. The nonlinear part is handled by particles, the linear part
+! by a Kalman filter conditioned on each particle's nonlinear state.
+!
+! This requires knowing which states are linear/nonlinear, which is
+! model-specific. Full implementation deferred.
+!
+! info = 4 (not yet implemented)
+! ==========================================================================
+subroutine fa_pf_rb_update(n, m, n_particles, n_linear, particles, weights, &
+                             z, h_ptr, obs_id, R, obs_params, nop, info) &
+    bind(C, name="fa_pf_rb_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, n_particles, n_linear, obs_id, nop
+    real(c_double), intent(inout)      :: particles(n * n_particles)
+    real(c_double), intent(inout)      :: weights(n_particles)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    integer(c_int), intent(out)        :: info
+
+    ! TODO: Implement Rao-Blackwellized particle filter
+    ! This requires:
+    !   1. Partitioning state into linear (n_linear) and nonlinear (n - n_linear) parts
+    !   2. Each particle carries: nonlinear state + KF mean/covariance for linear part
+    !   3. For each particle:
+    !      a. Update nonlinear state via standard PF weighting
+    !      b. Update linear state via conditional Kalman filter
+    !   4. The particle array would need to be expanded to hold per-particle KF state
+    info = 4
+
+end subroutine fa_pf_rb_update
+
+
+! ==========================================================================
+! fa_rts_smooth — Rauch-Tung-Striebel (RTS) smoother
+!
+! Given forward Kalman filter results, performs backward smoothing pass.
+!
+! T — number of timesteps
+! x_filt(n*T), P_filt(n*n*T) — filtered estimates from forward KF pass
+! x_pred(n*T), P_pred(n*n*T) — predicted estimates from forward KF pass
+! F_all(n*n*T) — state transition matrices used at each step
+! x_smooth(n*T), P_smooth(n*n*T) — output smoothed estimates
+!
+! Backward pass: for t = T-1 down to 1:
+!   G_t = P_filt_t * F_{t+1}^T * P_pred_{t+1}^-1
+!   x_smooth_t = x_filt_t + G_t * (x_smooth_{t+1} - x_pred_{t+1})
+!   P_smooth_t = P_filt_t + G_t * (P_smooth_{t+1} - P_pred_{t+1}) * G_t^T
+! Initialize: x_smooth_T = x_filt_T, P_smooth_T = P_filt_T
+!
+! info = 0 ok, 3 invalid input, 4 solve failure
+! ==========================================================================
+subroutine fa_rts_smooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, &
+                          x_smooth, P_smooth, info) &
+    bind(C, name="fa_rts_smooth")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, nsteps
+    real(c_double), intent(in)         :: x_filt(n*nsteps)
+    real(c_double), intent(in)         :: P_filt(n*n*nsteps)
+    real(c_double), intent(in)         :: x_pred(n*nsteps)
+    real(c_double), intent(in)         :: P_pred(n*n*nsteps)
+    real(c_double), intent(in)         :: F_all(n*n*nsteps)
+    real(c_double), intent(out)        :: x_smooth(n*nsteps)
+    real(c_double), intent(out)        :: P_smooth(n*n*nsteps)
+    integer(c_int), intent(out)        :: info
+
+    real(c_double), allocatable :: FT(:), PfFT(:), Ppred_inv(:), Pp_copy(:)
+    real(c_double), allocatable :: G(:), GT(:)
+    real(c_double), allocatable :: dx(:), Gdx(:), dP(:), GdP(:), GdPGT(:)
+    integer :: nn, t_idx, x_off, x_off_next, P_off, P_off_next, F_off_next
+    integer :: solve_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0 .or. nsteps <= 0) then
+        info = 3
+        return
+    end if
+
+    ! Initialize output
+    x_smooth(1:n*nsteps) = 0.0d0
+    P_smooth(1:n*n*nsteps) = 0.0d0
+
+    ! Copy last timestep: smoothed = filtered
+    x_off = (nsteps - 1) * n
+    P_off = (nsteps - 1) * nn
+    x_smooth(x_off+1 : x_off+n) = x_filt(x_off+1 : x_off+n)
+    P_smooth(P_off+1 : P_off+nn) = P_filt(P_off+1 : P_off+nn)
+
+    if (nsteps == 1) return
+
+    allocate(FT(nn), PfFT(nn), Ppred_inv(nn), Pp_copy(nn))
+    allocate(G(nn), GT(nn))
+    allocate(dx(n), Gdx(n), dP(nn), GdP(nn), GdPGT(nn))
+
+    ! Backward pass: t = T-1 down to 1 (1-based indexing)
+    do t_idx = nsteps - 1, 1, -1
+        x_off      = (t_idx - 1) * n
+        P_off      = (t_idx - 1) * nn
+        x_off_next = t_idx * n
+        P_off_next = t_idx * nn
+        F_off_next = t_idx * nn    ! F used to go from t to t+1
+
+        ! FT = F_{t+1}^T
+        call mat_transpose(F_all(F_off_next+1), FT, n, n)
+
+        ! PfFT = P_filt_t * FT
+        call mat_multiply(P_filt(P_off+1), FT, PfFT, n, n, n)
+
+        ! Ppred_inv = P_pred_{t+1}^-1 (need copy since solve modifies A)
+        Pp_copy(1:nn) = P_pred(P_off_next+1 : P_off_next+nn)
+        call mat_identity(Ppred_inv, n)
+        call mat_solve_symm(Pp_copy, Ppred_inv, n, n, solve_info)
+        if (solve_info /= 0) then
+            info = 4
+            deallocate(FT, PfFT, Ppred_inv, Pp_copy, G, GT, dx, Gdx, dP, GdP, GdPGT)
+            return
+        end if
+
+        ! G = PfFT * Ppred_inv
+        call mat_multiply(PfFT, Ppred_inv, G, n, n, n)
+
+        ! x_smooth_t = x_filt_t + G * (x_smooth_{t+1} - x_pred_{t+1})
+        dx(1:n) = x_smooth(x_off_next+1:x_off_next+n) - x_pred(x_off_next+1:x_off_next+n)
+        call mat_vec_multiply(G, dx, Gdx, n, n)
+        x_smooth(x_off+1:x_off+n) = x_filt(x_off+1:x_off+n) + Gdx(1:n)
+
+        ! P_smooth_t = P_filt_t + G * (P_smooth_{t+1} - P_pred_{t+1}) * G^T
+        call mat_subtract(P_smooth(P_off_next+1), P_pred(P_off_next+1), dP, n, n)
+        call mat_multiply(G, dP, GdP, n, n, n)
+        call mat_transpose(G, GT, n, n)
+        call mat_multiply(GdP, GT, GdPGT, n, n, n)
+        call mat_add(P_filt(P_off+1), GdPGT, P_smooth(P_off+1), n, n)
+    end do
+
+    deallocate(FT, PfFT, Ppred_inv, Pp_copy, G, GT, dx, Gdx, dP, GdP, GdPGT)
+
+end subroutine fa_rts_smooth
+
+
+! ==========================================================================
+! fa_urtss_smooth — Unscented Rauch-Tung-Striebel Smoother
+!
+! Delegates to fa_rts_smooth. The caller should provide F_all as
+! UKF-derived effective linearization: F_eff_t = Pxy_t * Pxx_t^-1,
+! computed during the UKF forward pass. With this, the RTS formulas
+! are equivalent to the URTSS.
+!
+! info = 0 ok, 3 invalid input, 4 solve failure
+! ==========================================================================
+subroutine fa_urtss_smooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, &
+                             x_smooth, P_smooth, info) &
+    bind(C, name="fa_urtss_smooth")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, nsteps
+    real(c_double), intent(in)         :: x_filt(n*nsteps)
+    real(c_double), intent(in)         :: P_filt(n*n*nsteps)
+    real(c_double), intent(in)         :: x_pred(n*nsteps)
+    real(c_double), intent(in)         :: P_pred(n*n*nsteps)
+    real(c_double), intent(in)         :: F_all(n*n*nsteps)
+    real(c_double), intent(out)        :: x_smooth(n*nsteps)
+    real(c_double), intent(out)        :: P_smooth(n*n*nsteps)
+    integer(c_int), intent(out)        :: info
+
+    interface
+        subroutine fa_rts_smooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, &
+                                  x_smooth, P_smooth, info) &
+            bind(C, name="fa_rts_smooth")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, nsteps
+            real(c_double), intent(in)         :: x_filt(n*nsteps)
+            real(c_double), intent(in)         :: P_filt(n*n*nsteps)
+            real(c_double), intent(in)         :: x_pred(n*nsteps)
+            real(c_double), intent(in)         :: P_pred(n*n*nsteps)
+            real(c_double), intent(in)         :: F_all(n*n*nsteps)
+            real(c_double), intent(out)        :: x_smooth(n*nsteps)
+            real(c_double), intent(out)        :: P_smooth(n*n*nsteps)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    call fa_rts_smooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, &
+                       x_smooth, P_smooth, info)
+
+end subroutine fa_urtss_smooth
+
+
+! ==========================================================================
+! fa_batch_wls — Weighted Least Squares batch estimator
+!
+! Gauss-Newton iteration to minimize:
+!   J(x) = sum_i ||z_i - H_i * x||^2_{R_i^-1}
+!
+! H_all(m_total * n) — stacked Jacobians (linear observation matrices)
+! z_all(m_total) — stacked measurements
+! R_all(m_total * m_total) — block diagonal measurement noise covariance
+!
+! For linear systems, converges in 1 iteration.
+! info = 0 ok, 3 invalid input, 4 solve failure or max_iter reached
+! ==========================================================================
+subroutine fa_batch_wls(n, m_total, x, z_all, H_all, R_all, max_iter, tol, info) &
+    bind(C, name="fa_batch_wls")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m_total, max_iter
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(in)         :: z_all(m_total)
+    real(c_double), intent(in)         :: H_all(m_total * n)
+    real(c_double), intent(in)         :: R_all(m_total * m_total)
+    real(c_double), value, intent(in)  :: tol
+    integer(c_int), intent(out)        :: info
+
+    real(c_double), allocatable :: W(:), Rcopy(:), HT(:), HTW(:), HTWH(:), HTWr(:)
+    real(c_double), allocatable :: residual(:), Hx(:), dx(:), HTWH_copy(:)
+    real(c_double) :: vec_norm, dx_norm
+    integer :: iter, nn, mm, solve_info
+
+    info = 0
+    nn = n * n
+    mm = m_total * m_total
+
+    if (n <= 0 .or. m_total <= 0) then
+        info = 3
+        return
+    end if
+
+    ! W = R^-1 (weight matrix)
+    allocate(W(mm), Rcopy(mm))
+    Rcopy(1:mm) = R_all(1:mm)
+    call mat_identity(W, m_total)
+    call mat_solve_symm(Rcopy, W, m_total, m_total, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        deallocate(W, Rcopy)
+        return
+    end if
+
+    allocate(HT(n * m_total), HTW(n * m_total), HTWH(nn), HTWH_copy(nn))
+    allocate(HTWr(n), residual(m_total), Hx(m_total), dx(n))
+
+    ! HT = H^T (n x m_total)
+    call mat_transpose(H_all, HT, m_total, n)
+
+    ! HTW = HT * W (n x m_total)
+    call mat_multiply(HT, W, HTW, n, m_total, m_total)
+
+    ! HTWH = HTW * H (n x n)
+    call mat_multiply(HTW, H_all, HTWH, n, m_total, n)
+
+    ! Gauss-Newton iteration
+    do iter = 1, max_iter
+        ! residual = z_all - H_all * x
+        call mat_vec_multiply(H_all, x, Hx, m_total, n)
+        residual(1:m_total) = z_all(1:m_total) - Hx(1:m_total)
+
+        ! HTWr = HTW * residual
+        call mat_vec_multiply(HTW, residual, HTWr, n, m_total)
+
+        ! Solve HTWH * dx = HTWr
+        dx(1:n) = HTWr(1:n)
+        HTWH_copy(1:nn) = HTWH(1:nn)
+        call mat_solve_symm(HTWH_copy, dx, n, 1, solve_info)
+        if (solve_info /= 0) then
+            info = 4
+            deallocate(W, Rcopy, HT, HTW, HTWH, HTWH_copy, HTWr, residual, Hx, dx)
+            return
+        end if
+
+        ! Update state
+        x(1:n) = x(1:n) + dx(1:n)
+
+        ! Check convergence
+        dx_norm = vec_norm(dx, n)
+        if (dx_norm < tol) then
+            deallocate(W, Rcopy, HT, HTW, HTWH, HTWH_copy, HTWr, residual, Hx, dx)
+            return
+        end if
+    end do
+
+    ! Max iterations reached without convergence
+    info = 4
+
+    deallocate(W, Rcopy, HT, HTW, HTWH, HTWH_copy, HTWr, residual, Hx, dx)
+
+end subroutine fa_batch_wls
+
+
+! ==========================================================================
+! fa_batch_map — Maximum A Posteriori batch estimator
+!
+! Gauss-Newton iteration to minimize:
+!   J(x) = sum_i ||z_i - H_i * x||^2_{R_i^-1} + ||x - x0||^2_{P0^-1}
+!
+! Same as WLS but with prior term P0^-1 added to normal matrix and
+! P0^-1 * (x - x0) subtracted from the RHS.
+!
+! info = 0 ok, 3 invalid input, 4 solve failure or max_iter reached
+! ==========================================================================
+subroutine fa_batch_map(n, m_total, x, x0, P0, z_all, H_all, R_all, max_iter, tol, info) &
+    bind(C, name="fa_batch_map")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m_total, max_iter
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(in)         :: x0(n)
+    real(c_double), intent(in)         :: P0(n*n)
+    real(c_double), intent(in)         :: z_all(m_total)
+    real(c_double), intent(in)         :: H_all(m_total * n)
+    real(c_double), intent(in)         :: R_all(m_total * m_total)
+    real(c_double), value, intent(in)  :: tol
+    integer(c_int), intent(out)        :: info
+
+    real(c_double), allocatable :: W(:), P0_inv(:), P0copy(:), Rcopy(:)
+    real(c_double), allocatable :: HT(:), HTW(:), HTWH(:)
+    real(c_double), allocatable :: normal_mat(:), nm_copy(:), rhs(:)
+    real(c_double), allocatable :: residual(:), Hx(:), dx(:), x_diff(:), P0_inv_diff(:)
+    real(c_double) :: vec_norm, dx_norm
+    integer :: iter, nn, mm, solve_info
+
+    info = 0
+    nn = n * n
+    mm = m_total * m_total
+
+    if (n <= 0 .or. m_total <= 0) then
+        info = 3
+        return
+    end if
+
+    ! W = R^-1
+    allocate(W(mm), Rcopy(mm))
+    Rcopy(1:mm) = R_all(1:mm)
+    call mat_identity(W, m_total)
+    call mat_solve_symm(Rcopy, W, m_total, m_total, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        deallocate(W, Rcopy)
+        return
+    end if
+
+    ! P0_inv = P0^-1
+    allocate(P0_inv(nn), P0copy(nn))
+    P0copy(1:nn) = P0(1:nn)
+    call mat_identity(P0_inv, n)
+    call mat_solve_symm(P0copy, P0_inv, n, n, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        deallocate(W, Rcopy, P0_inv, P0copy)
+        return
+    end if
+
+    allocate(HT(n * m_total), HTW(n * m_total), HTWH(nn))
+    allocate(normal_mat(nn), nm_copy(nn), rhs(n))
+    allocate(residual(m_total), Hx(m_total), dx(n), x_diff(n), P0_inv_diff(n))
+
+    ! HT = H^T
+    call mat_transpose(H_all, HT, m_total, n)
+
+    ! HTW = HT * W
+    call mat_multiply(HT, W, HTW, n, m_total, m_total)
+
+    ! HTWH = HTW * H
+    call mat_multiply(HTW, H_all, HTWH, n, m_total, n)
+
+    ! Normal matrix = HTWH + P0_inv
+    call mat_add(HTWH, P0_inv, normal_mat, n, n)
+
+    ! Gauss-Newton iteration
+    do iter = 1, max_iter
+        ! residual = z_all - H_all * x
+        call mat_vec_multiply(H_all, x, Hx, m_total, n)
+        residual(1:m_total) = z_all(1:m_total) - Hx(1:m_total)
+
+        ! rhs = HTW * residual - P0_inv * (x - x0)
+        call mat_vec_multiply(HTW, residual, rhs, n, m_total)
+        x_diff(1:n) = x(1:n) - x0(1:n)
+        call mat_vec_multiply(P0_inv, x_diff, P0_inv_diff, n, n)
+        rhs(1:n) = rhs(1:n) - P0_inv_diff(1:n)
+
+        ! Solve normal_mat * dx = rhs
+        dx(1:n) = rhs(1:n)
+        nm_copy(1:nn) = normal_mat(1:nn)
+        call mat_solve_symm(nm_copy, dx, n, 1, solve_info)
+        if (solve_info /= 0) then
+            info = 4
+            deallocate(W, Rcopy, P0_inv, P0copy, HT, HTW, HTWH)
+            deallocate(normal_mat, nm_copy, rhs, residual, Hx, dx, x_diff, P0_inv_diff)
+            return
+        end if
+
+        ! Update state
+        x(1:n) = x(1:n) + dx(1:n)
+
+        ! Check convergence
+        dx_norm = vec_norm(dx, n)
+        if (dx_norm < tol) then
+            deallocate(W, Rcopy, P0_inv, P0copy, HT, HTW, HTWH)
+            deallocate(normal_mat, nm_copy, rhs, residual, Hx, dx, x_diff, P0_inv_diff)
+            return
+        end if
+    end do
+
+    ! Max iterations reached without convergence
+    info = 4
+
+    deallocate(W, Rcopy, P0_inv, P0copy, HT, HTW, HTWH)
+    deallocate(normal_mat, nm_copy, rhs, residual, Hx, dx, x_diff, P0_inv_diff)
+
+end subroutine fa_batch_map

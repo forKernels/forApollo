@@ -212,6 +212,109 @@ program test_estimate
             integer(c_int), intent(out)        :: validity(m)
             integer(c_int), intent(out)        :: info
         end subroutine
+
+        subroutine fa_if_predict(n, eta, Ymat, F, Q, info) bind(C, name="fa_if_predict")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n
+            real(c_double), intent(inout)      :: eta(n)
+            real(c_double), intent(inout)      :: Ymat(n*n)
+            real(c_double), intent(in)         :: F(n*n)
+            real(c_double), intent(in)         :: Q(n*n)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_if_update(n, m, eta, Ymat, z, H, R, validity, info) &
+            bind(C, name="fa_if_update")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, m
+            real(c_double), intent(inout)      :: eta(n)
+            real(c_double), intent(inout)      :: Ymat(n*n)
+            real(c_double), intent(in)         :: z(m)
+            real(c_double), intent(in)         :: H(m*n)
+            real(c_double), intent(in)         :: R(m*m)
+            integer(c_int), intent(out)        :: validity(m)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_pf_sir_predict(n, n_particles, particles, weights, &
+                                      f_ptr, model_id, params, np, Q, dt, n_steps, seed, info) &
+            bind(C, name="fa_pf_sir_predict")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, n_particles, model_id, np, n_steps
+            real(c_double), intent(inout)      :: particles(n * n_particles)
+            real(c_double), intent(inout)      :: weights(n_particles)
+            type(c_funptr), value              :: f_ptr
+            real(c_double), intent(in)         :: params(np)
+            real(c_double), intent(in)         :: Q(n*n)
+            real(c_double), value, intent(in)  :: dt
+            integer(c_int), intent(inout)      :: seed
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_pf_sir_update(n, m, n_particles, particles, weights, &
+                                     z, h_ptr, obs_id, R, obs_params, nop, info) &
+            bind(C, name="fa_pf_sir_update")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, m, n_particles, obs_id, nop
+            real(c_double), intent(in)         :: particles(n * n_particles)
+            real(c_double), intent(inout)      :: weights(n_particles)
+            real(c_double), intent(in)         :: z(m)
+            type(c_funptr), value              :: h_ptr
+            real(c_double), intent(in)         :: R(m*m)
+            real(c_double), intent(in)         :: obs_params(nop)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_pf_sir_resample(n, n_particles, particles, weights, seed, info) &
+            bind(C, name="fa_pf_sir_resample")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, n_particles
+            real(c_double), intent(inout)      :: particles(n * n_particles)
+            real(c_double), intent(inout)      :: weights(n_particles)
+            integer(c_int), intent(inout)      :: seed
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_rts_smooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, &
+                                  x_smooth, P_smooth, info) &
+            bind(C, name="fa_rts_smooth")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, nsteps
+            real(c_double), intent(in)         :: x_filt(n*nsteps)
+            real(c_double), intent(in)         :: P_filt(n*n*nsteps)
+            real(c_double), intent(in)         :: x_pred(n*nsteps)
+            real(c_double), intent(in)         :: P_pred(n*n*nsteps)
+            real(c_double), intent(in)         :: F_all(n*n*nsteps)
+            real(c_double), intent(out)        :: x_smooth(n*nsteps)
+            real(c_double), intent(out)        :: P_smooth(n*n*nsteps)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_batch_wls(n, m_total, x, z_all, H_all, R_all, max_iter, tol, info) &
+            bind(C, name="fa_batch_wls")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, m_total, max_iter
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(in)         :: z_all(m_total)
+            real(c_double), intent(in)         :: H_all(m_total * n)
+            real(c_double), intent(in)         :: R_all(m_total * m_total)
+            real(c_double), value, intent(in)  :: tol
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_batch_map(n, m_total, x, x0, P0, z_all, H_all, R_all, max_iter, tol, info) &
+            bind(C, name="fa_batch_map")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, m_total, max_iter
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(in)         :: x0(n)
+            real(c_double), intent(in)         :: P0(n*n)
+            real(c_double), intent(in)         :: z_all(m_total)
+            real(c_double), intent(in)         :: H_all(m_total * n)
+            real(c_double), intent(in)         :: R_all(m_total * m_total)
+            real(c_double), value, intent(in)  :: tol
+            integer(c_int), intent(out)        :: info
+        end subroutine
     end interface
 
     integer :: n_passed, n_failed
@@ -244,6 +347,21 @@ program test_estimate
 
     ! --- Edge cases ---
     call test_edge_cases()
+
+    ! --- Information filter tests ---
+    call test_if_update_additivity()
+    call test_if_predict_update_cycle()
+
+    ! --- Particle filter tests ---
+    call test_pf_sir_basic()
+    call test_pf_sir_resample()
+
+    ! --- Smoother tests ---
+    call test_rts_smoother()
+
+    ! --- Batch estimator tests ---
+    call test_batch_wls()
+    call test_batch_map()
 
     ! --- Summary ---
     write(*,*)
@@ -1258,6 +1376,639 @@ contains
         write(*,'(A)') 'PASS'
         n_passed = n_passed + 1
     end subroutine
+
+    ! =====================================================================
+    ! Test 16: IF update additivity — two sensors give same result
+    ! whether fused together or sequentially in information form
+    ! =====================================================================
+    subroutine test_if_update_additivity()
+        ! State: 2D position (n=2), two position sensors (m=1 each)
+        ! Use eta/Ym naming to avoid Fortran case-insensitivity collisions
+        real(c_double) :: eta_seq(2), Ym_seq(4)
+        real(c_double) :: eta_both(2), Ym_both(4)
+        real(c_double) :: H1(2), H2(2), R1(1), R2(1)
+        real(c_double) :: z1(1), z2(1)
+        real(c_double) :: H_both(4), R_both(4), z_both(2)
+        integer(c_int) :: validity1(1), validity2(1), val_both(2), info
+        real(c_double) :: diff
+        integer :: i
+
+        write(*,'(A)', advance='no') '  IF update additivity... '
+
+        ! Start with a prior: P = diag(100,100), x = [0, 0]
+        ! Y = P^-1 = diag(0.01, 0.01)
+        ! eta = Y * x = [0, 0]
+
+        ! Sensor 1: observes x-position at z=5.0, R=1.0
+        H1 = (/ 1.0d0, 0.0d0 /)
+        R1(1) = 1.0d0
+        z1(1) = 5.0d0
+
+        ! Sensor 2: observes y-position at z=3.0, R=2.0
+        H2 = (/ 0.0d0, 1.0d0 /)
+        R2(1) = 2.0d0
+        z2(1) = 3.0d0
+
+        ! --- Sequential fusion: sensor 1 then sensor 2 ---
+        eta_seq = (/ 0.0d0, 0.0d0 /)
+        Ym_seq = (/ 0.01d0, 0.0d0, 0.0d0, 0.01d0 /)
+
+        call fa_if_update(2, 1, eta_seq, Ym_seq, z1, H1, R1, validity1, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (sensor1 info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        call fa_if_update(2, 1, eta_seq, Ym_seq, z2, H2, R2, validity2, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (sensor2 info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! --- Simultaneous fusion: both sensors at once ---
+        eta_both = (/ 0.0d0, 0.0d0 /)
+        Ym_both = (/ 0.01d0, 0.0d0, 0.0d0, 0.01d0 /)
+
+        H_both = (/ 1.0d0, 0.0d0, 0.0d0, 1.0d0 /)
+        R_both = (/ 1.0d0, 0.0d0, 0.0d0, 2.0d0 /)
+        z_both = (/ 5.0d0, 3.0d0 /)
+
+        call fa_if_update(2, 2, eta_both, Ym_both, z_both, H_both, R_both, val_both, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (combined info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! Compare sequential vs simultaneous
+        diff = 0.0d0
+        do i = 1, 2
+            diff = diff + abs(eta_seq(i) - eta_both(i))
+        end do
+        do i = 1, 4
+            diff = diff + abs(Ym_seq(i) - Ym_both(i))
+        end do
+
+        if (diff > 1.0d-10) then
+            write(*,'(A,F12.8,A)') 'FAIL (diff=', diff, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+    end subroutine
+
+    ! =====================================================================
+    ! Test 17: IF predict-update cycle — 5 steps, compare with KF
+    ! =====================================================================
+    subroutine test_if_predict_update_cycle()
+        ! 2D const-vel (n=4): [px, py, vx, vy]
+        ! Position observation (m=2)
+        integer, parameter :: n = 4, m = 2, T = 5
+        real(c_double) :: x_kf(n), P_kf(n*n), x_if(n), P_if(n*n)
+        real(c_double) :: eta_if(n), Ym_if(n*n)
+        real(c_double) :: F(n*n), Q(n*n), H(m*n), R(m*m)
+        real(c_double) :: z(m), dt
+        integer(c_int) :: validity_kf(m), validity_if(m), info_kf, info_if
+        real(c_double) :: diff
+        integer :: step, i
+
+        write(*,'(A)', advance='no') '  IF predict-update cycle... '
+
+        dt = 1.0d0
+
+        ! Build F (const-vel)
+        call build_constvel_F(F, dt)
+
+        ! Q = 0.01 * I
+        call build_identity(Q, n)
+        Q = 0.01d0 * Q
+
+        ! H = [I_2 | 0_2] (observe position only)
+        H = 0.0d0
+        H(1) = 1.0d0  ! H(1,1)
+        H(4) = 1.0d0  ! H(2,2)
+
+        ! R = diag(1, 1)
+        R = 0.0d0
+        R(1) = 1.0d0
+        R(4) = 1.0d0
+
+        ! Initial state: x = [0, 0, 1, 0], P = I
+        x_kf = (/ 0.0d0, 0.0d0, 1.0d0, 0.0d0 /)
+        call build_identity(P_kf, n)
+
+        ! Convert to information form: Y = P^-1 = I, eta = Y*x = x
+        eta_if(1:n) = x_kf(1:n)
+        call build_identity(Ym_if, n)
+
+        ! Run 5 steps of predict-update
+        do step = 1, T
+            ! Generate "measurement" at true position (no noise for deterministic test)
+            z(1) = dble(step)      ! true px = step * 1.0 (vx=1)
+            z(2) = 0.0d0           ! true py = 0
+
+            ! KF predict + update
+            call fa_kf_predict(n, x_kf, P_kf, F, Q, info_kf)
+            call fa_kf_update(n, m, x_kf, P_kf, z, H, R, validity_kf, info_kf)
+
+            ! IF predict + update
+            call fa_if_predict(n, eta_if, Ym_if, F, Q, info_if)
+            call fa_if_update(n, m, eta_if, Ym_if, z, H, R, validity_if, info_if)
+        end do
+
+        ! Convert IF result back to covariance form for comparison
+        ! P_if = Ym_if^-1, x_if = P_if * eta_if
+        call build_identity(P_if, n)
+        call mat_solve_symm_test(Ym_if, P_if, n, n, info_if)
+        if (info_if /= 0) then
+            write(*,'(A)') 'FAIL (IF inversion failed)'
+            n_failed = n_failed + 1
+            return
+        end if
+        call mat_vec_multiply_test(P_if, eta_if, x_if, n, n)
+
+        ! Compare states
+        diff = 0.0d0
+        do i = 1, n
+            diff = diff + abs(x_kf(i) - x_if(i))
+        end do
+
+        if (diff > 1.0d-6) then
+            write(*,'(A,F12.8,A)') 'FAIL (state diff=', diff, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! Compare covariances
+        diff = 0.0d0
+        do i = 1, n*n
+            diff = diff + abs(P_kf(i) - P_if(i))
+        end do
+
+        if (diff > 1.0d-5) then
+            write(*,'(A,F12.8,A)') 'FAIL (cov diff=', diff, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+    end subroutine
+
+    ! =====================================================================
+    ! Test 18: SIR particle filter basic — 1000 particles, const-vel
+    ! =====================================================================
+    subroutine test_pf_sir_basic()
+        ! 3D const-vel (n=6): [px,py,pz,vx,vy,vz], position obs (obs_id=1, m=3)
+        integer, parameter :: n = 6, m = 3, n_particles = 1000, nstep = 5
+        real(c_double), allocatable :: particles(:), weights(:)
+        real(c_double) :: Q(n*n), R(m*m), z(m), params(1)
+        real(c_double) :: obs_params(1)
+        real(c_double) :: mean_x(n), true_x(n)
+        real(c_double) :: diff, dt
+        integer(c_int) :: seed, info
+        integer :: i, j, step, offset
+
+        write(*,'(A)', advance='no') '  PF SIR basic... '
+
+        allocate(particles(n * n_particles), weights(n_particles))
+
+        dt = 1.0d0
+        params(1) = 0.0d0
+        obs_params(1) = 0.0d0
+
+        ! Q = 0.01 * I
+        call build_identity(Q, n)
+        Q = 0.01d0 * Q
+
+        ! R = I_3
+        R = 0.0d0
+        R(1) = 1.0d0; R(5) = 1.0d0; R(9) = 1.0d0
+
+        ! Initialize particles around [0,0,0, 1,0,0] with some spread
+        seed = 42
+        do i = 1, n_particles
+            offset = (i - 1) * n
+            particles(offset + 1) = 0.0d0 + 0.5d0 * lcg_normal_test(seed)  ! px
+            particles(offset + 2) = 0.0d0 + 0.5d0 * lcg_normal_test(seed)  ! py
+            particles(offset + 3) = 0.0d0 + 0.5d0 * lcg_normal_test(seed)  ! pz
+            particles(offset + 4) = 1.0d0 + 0.2d0 * lcg_normal_test(seed)  ! vx
+            particles(offset + 5) = 0.0d0 + 0.2d0 * lcg_normal_test(seed)  ! vy
+            particles(offset + 6) = 0.0d0 + 0.2d0 * lcg_normal_test(seed)  ! vz
+        end do
+
+        ! Uniform weights
+        do i = 1, n_particles
+            weights(i) = 1.0d0 / dble(n_particles)
+        end do
+
+        ! Run 5 steps
+        true_x = (/ 0.0d0, 0.0d0, 0.0d0, 1.0d0, 0.0d0, 0.0d0 /)
+        do step = 1, nstep
+            ! True state propagation (const-vel: pos += dt * vel)
+            true_x(1) = true_x(1) + dt * true_x(4)
+            true_x(2) = true_x(2) + dt * true_x(5)
+            true_x(3) = true_x(3) + dt * true_x(6)
+
+            ! Measurement at true position
+            z(1) = true_x(1); z(2) = true_x(2); z(3) = true_x(3)
+
+            ! Predict: propagate particles using const-vel model (model_id=40)
+            call fa_pf_sir_predict(n, n_particles, particles, weights, &
+                                    c_null_funptr, 40, params, 1, Q, dt, 10, seed, info)
+            if (info /= 0) then
+                write(*,'(A,I3,A)') 'FAIL (predict info=', info, ')'
+                n_failed = n_failed + 1
+                deallocate(particles, weights)
+                return
+            end if
+
+            ! Update: weight particles using position observation (obs_id=1, m=3)
+            call fa_pf_sir_update(n, m, n_particles, particles, weights, &
+                                   z, c_null_funptr, 1, R, obs_params, 1, info)
+            if (info /= 0) then
+                write(*,'(A,I3,A)') 'FAIL (update info=', info, ')'
+                n_failed = n_failed + 1
+                deallocate(particles, weights)
+                return
+            end if
+
+            ! Resample
+            call fa_pf_sir_resample(n, n_particles, particles, weights, seed, info)
+        end do
+
+        ! Compute weighted mean
+        mean_x = 0.0d0
+        do i = 1, n_particles
+            offset = (i - 1) * n
+            do j = 1, n
+                mean_x(j) = mean_x(j) + weights(i) * particles(offset + j)
+            end do
+        end do
+
+        ! Check weighted mean is near truth (tolerance ~3x measurement noise)
+        diff = sqrt((mean_x(1) - true_x(1))**2 + (mean_x(2) - true_x(2))**2 + &
+                    (mean_x(3) - true_x(3))**2)
+
+        if (diff > 3.0d0) then
+            write(*,'(A,F8.4,A)') 'FAIL (position error=', diff, ')'
+            n_failed = n_failed + 1
+            deallocate(particles, weights)
+            return
+        end if
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+        deallocate(particles, weights)
+    end subroutine
+
+    ! =====================================================================
+    ! Test 19: SIR resample — verify weights uniform after resample
+    ! =====================================================================
+    subroutine test_pf_sir_resample()
+        integer, parameter :: n = 2, n_particles = 100
+        real(c_double) :: particles(n * n_particles), weights(n_particles)
+        real(c_double) :: w_max, w_min, eff_before, eff_after
+        integer(c_int) :: seed, info
+        integer :: i, offset
+
+        write(*,'(A)', advance='no') '  PF SIR resample... '
+
+        seed = 123
+
+        ! Initialize particles
+        do i = 1, n_particles
+            offset = (i - 1) * n
+            particles(offset + 1) = dble(i)
+            particles(offset + 2) = dble(i) * 0.1d0
+        end do
+
+        ! Set highly non-uniform weights (simulate post-update)
+        weights = 0.0d0
+        weights(1) = 0.5d0   ! one dominant particle
+        weights(2) = 0.3d0
+        do i = 3, n_particles
+            weights(i) = 0.2d0 / dble(n_particles - 2)
+        end do
+
+        ! Compute effective sample size before resample: N_eff = 1/sum(w_i^2)
+        eff_before = 0.0d0
+        do i = 1, n_particles
+            eff_before = eff_before + weights(i) * weights(i)
+        end do
+        eff_before = 1.0d0 / eff_before
+
+        ! Resample
+        call fa_pf_sir_resample(n, n_particles, particles, weights, seed, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! After resample, all weights should be 1/N
+        w_max = weights(1)
+        w_min = weights(1)
+        do i = 2, n_particles
+            if (weights(i) > w_max) w_max = weights(i)
+            if (weights(i) < w_min) w_min = weights(i)
+        end do
+
+        if (abs(w_max - w_min) > 1.0d-14) then
+            write(*,'(A,F12.8,A)') 'FAIL (weight spread=', w_max - w_min, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! Effective sample size after should be N
+        eff_after = 0.0d0
+        do i = 1, n_particles
+            eff_after = eff_after + weights(i) * weights(i)
+        end do
+        eff_after = 1.0d0 / eff_after
+
+        ! After resample N_eff should be N (or very close)
+        if (abs(eff_after - dble(n_particles)) > 1.0d-8) then
+            write(*,'(A,F8.2,A)') 'FAIL (N_eff after=', eff_after, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! N_eff should have improved
+        if (eff_after <= eff_before) then
+            write(*,'(A)') 'FAIL (N_eff did not improve)'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+    end subroutine
+
+    ! =====================================================================
+    ! Test 20: RTS smoother — smoothed P <= filtered P at interior steps
+    ! =====================================================================
+    subroutine test_rts_smoother()
+        integer, parameter :: n = 4, m = 2, T = 10
+        real(c_double) :: x_filt(n*T), P_filt(n*n*T)
+        real(c_double) :: x_pred(n*T), P_pred(n*n*T)
+        real(c_double) :: F_all(n*n*T)
+        real(c_double) :: x_smooth(n*T), P_smooth(n*n*T)
+        real(c_double) :: x(n), P(n*n), x_p(n), P_p(n*n)
+        real(c_double) :: F(n*n), Q(n*n), H(m*n), R(m*m), z(m)
+        real(c_double) :: dt
+        integer(c_int) :: validity(m), info
+        integer :: step, i, x_off, P_off
+        real(c_double) :: trace_filt, trace_smooth
+        logical :: smoother_better
+
+        write(*,'(A)', advance='no') '  RTS smoother... '
+
+        dt = 1.0d0
+
+        ! Build matrices
+        call build_constvel_F(F, dt)
+        call build_identity(Q, n)
+        Q = 0.01d0 * Q
+        H = 0.0d0
+        H(1) = 1.0d0; H(4) = 1.0d0
+        R = 0.0d0
+        R(1) = 1.0d0; R(4) = 1.0d0
+
+        ! Initial state
+        x = (/ 0.0d0, 0.0d0, 1.0d0, 0.0d0 /)
+        call build_identity(P, n)
+
+        ! Forward KF pass — store predicted and filtered at each step
+        do step = 1, T
+            ! Store F for this step
+            P_off = (step - 1) * n * n
+            F_all(P_off+1 : P_off+n*n) = F(1:n*n)
+
+            ! Predict
+            x_p(1:n) = x(1:n)
+            P_p(1:n*n) = P(1:n*n)
+            call fa_kf_predict(n, x, P, F, Q, info)
+
+            ! Store predicted
+            x_off = (step - 1) * n
+            P_off = (step - 1) * n * n
+            x_pred(x_off+1 : x_off+n) = x(1:n)
+            P_pred(P_off+1 : P_off+n*n) = P(1:n*n)
+
+            ! Generate measurement at true position
+            z(1) = dble(step)
+            z(2) = 0.0d0
+
+            ! Update
+            call fa_kf_update(n, m, x, P, z, H, R, validity, info)
+
+            ! Store filtered
+            x_filt(x_off+1 : x_off+n) = x(1:n)
+            P_filt(P_off+1 : P_off+n*n) = P(1:n*n)
+        end do
+
+        ! Backward RTS smoothing pass
+        call fa_rts_smooth(n, T, x_filt, P_filt, x_pred, P_pred, F_all, x_smooth, P_smooth, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (smoother info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! Verify: smoothed P trace <= filtered P trace at interior timesteps
+        smoother_better = .true.
+        do step = 2, T - 1
+            P_off = (step - 1) * n * n
+            trace_filt = 0.0d0
+            trace_smooth = 0.0d0
+            do i = 1, n
+                trace_filt = trace_filt + P_filt(P_off + (i-1)*n + i)
+                trace_smooth = trace_smooth + P_smooth(P_off + (i-1)*n + i)
+            end do
+            ! Smoothed should have smaller or equal trace (less uncertainty)
+            if (trace_smooth > trace_filt + 1.0d-10) then
+                smoother_better = .false.
+            end if
+        end do
+
+        if (.not. smoother_better) then
+            write(*,'(A)') 'FAIL (smoothed P not smaller than filtered P)'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! Verify last timestep: smoothed = filtered
+        P_off = (T - 1) * n * n
+        x_off = (T - 1) * n
+        block
+            real(c_double) :: d
+            d = 0.0d0
+            do i = 1, n
+                d = d + abs(x_smooth(x_off+i) - x_filt(x_off+i))
+            end do
+            if (d > 1.0d-12) then
+                write(*,'(A,F12.8,A)') 'FAIL (last step not equal, diff=', d, ')'
+                n_failed = n_failed + 1
+                return
+            end if
+        end block
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+    end subroutine
+
+    ! =====================================================================
+    ! Test 21: Batch WLS — 5 position measurements of stationary target
+    ! =====================================================================
+    subroutine test_batch_wls()
+        ! n=2 (position), 5 measurements of 2D position (m_total=10)
+        integer, parameter :: n = 2, n_meas = 5, m_total = 10
+        real(c_double) :: x(n), z_all(m_total), H_all(m_total * n)
+        real(c_double) :: R_all(m_total * m_total)
+        real(c_double) :: expected(n), diff
+        integer(c_int) :: info
+        integer :: i
+
+        write(*,'(A)', advance='no') '  Batch WLS... '
+
+        ! 5 measurements of a stationary target at roughly [3, 4]
+        ! z = [3.1,4.2, 2.9,3.8, 3.0,4.0, 3.2,4.1, 2.8,3.9]
+        z_all = (/ 3.1d0, 4.2d0, 2.9d0, 3.8d0, 3.0d0, 4.0d0, 3.2d0, 4.1d0, 2.8d0, 3.9d0 /)
+
+        ! H = [I_2; I_2; I_2; I_2; I_2] (each measurement is direct position)
+        H_all = 0.0d0
+        do i = 1, n_meas
+            H_all(((i-1)*2) * n + 1) = 1.0d0  ! row 2i-1, col 1
+            H_all(((i-1)*2 + 1) * n + 2) = 1.0d0  ! row 2i, col 2
+        end do
+
+        ! R = I (uniform noise, so WLS = simple average)
+        R_all = 0.0d0
+        do i = 1, m_total
+            R_all((i-1)*m_total + i) = 1.0d0
+        end do
+
+        ! Initial guess
+        x = (/ 0.0d0, 0.0d0 /)
+
+        call fa_batch_wls(n, m_total, x, z_all, H_all, R_all, 10, 1.0d-12, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! With uniform R, WLS should give simple mean
+        expected(1) = (3.1d0 + 2.9d0 + 3.0d0 + 3.2d0 + 2.8d0) / 5.0d0
+        expected(2) = (4.2d0 + 3.8d0 + 4.0d0 + 4.1d0 + 3.9d0) / 5.0d0
+
+        diff = abs(x(1) - expected(1)) + abs(x(2) - expected(2))
+        if (diff > 1.0d-10) then
+            write(*,'(A,F12.8,A)') 'FAIL (diff=', diff, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+    end subroutine
+
+    ! =====================================================================
+    ! Test 22: Batch MAP — with strong prior, result between prior and WLS
+    ! =====================================================================
+    subroutine test_batch_map()
+        integer, parameter :: n = 2, n_meas = 5, m_total = 10
+        real(c_double) :: x_wls(n), x_map(n), x0(n), P0(n*n)
+        real(c_double) :: z_all(m_total), H_all(m_total * n), R_all(m_total * m_total)
+        real(c_double) :: wls_mean(n)
+        integer(c_int) :: info
+        integer :: i
+        logical :: between
+
+        write(*,'(A)', advance='no') '  Batch MAP... '
+
+        ! Same measurements as WLS test
+        z_all = (/ 3.1d0, 4.2d0, 2.9d0, 3.8d0, 3.0d0, 4.0d0, 3.2d0, 4.1d0, 2.8d0, 3.9d0 /)
+
+        H_all = 0.0d0
+        do i = 1, n_meas
+            H_all(((i-1)*2) * n + 1) = 1.0d0
+            H_all(((i-1)*2 + 1) * n + 2) = 1.0d0
+        end do
+
+        R_all = 0.0d0
+        do i = 1, m_total
+            R_all((i-1)*m_total + i) = 1.0d0
+        end do
+
+        ! First get WLS solution for comparison
+        x_wls = (/ 0.0d0, 0.0d0 /)
+        call fa_batch_wls(n, m_total, x_wls, z_all, H_all, R_all, 10, 1.0d-12, info)
+
+        wls_mean(1) = x_wls(1)
+        wls_mean(2) = x_wls(2)
+
+        ! Now MAP with strong prior at [0, 0]
+        x_map = (/ 0.0d0, 0.0d0 /)
+        x0 = (/ 0.0d0, 0.0d0 /)
+        ! P0 = 0.5 * I (strong prior — low uncertainty at x0)
+        call build_identity(P0, n)
+        P0 = 0.5d0 * P0
+
+        call fa_batch_map(n, m_total, x_map, x0, P0, z_all, H_all, R_all, 10, 1.0d-12, info)
+        if (info /= 0) then
+            write(*,'(A,I3,A)') 'FAIL (info=', info, ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        ! MAP result should be between prior (0,0) and WLS mean (~3,4)
+        ! More precisely, MAP should be pulled toward prior compared to WLS
+        between = .true.
+        do i = 1, n
+            ! MAP should be closer to x0 than WLS (prior pulls it)
+            if (abs(x_map(i) - x0(i)) > abs(wls_mean(i) - x0(i)) + 1.0d-10) then
+                between = .false.
+            end if
+            ! MAP should be different from prior (measurements pull it away)
+            if (abs(x_map(i) - x0(i)) < 1.0d-6) then
+                between = .false.
+            end if
+        end do
+
+        if (.not. between) then
+            write(*,'(A,2F8.4,A,2F8.4,A)') 'FAIL (MAP=', x_map(1), x_map(2), &
+                ' WLS=', wls_mean(1), wls_mean(2), ')'
+            n_failed = n_failed + 1
+            return
+        end if
+
+        write(*,'(A)') 'PASS'
+        n_passed = n_passed + 1
+    end subroutine
+
+    ! =====================================================================
+    ! Helper: simple LCG normal for test particle initialization
+    ! =====================================================================
+    function lcg_normal_test(s) result(z)
+        integer, intent(inout) :: s
+        real(c_double) :: z
+        real(c_double) :: u1, u2, pi_val
+        pi_val = 3.14159265358979323846d0
+        s = mod(s * 1103515245 + 12345, 2147483647)
+        if (s < 0) s = s + 2147483647
+        u1 = (dble(s) + 0.5d0) / 2147483647.0d0
+        s = mod(s * 1103515245 + 12345, 2147483647)
+        if (s < 0) s = s + 2147483647
+        u2 = (dble(s) + 0.5d0) / 2147483647.0d0
+        if (u1 < 1.0d-15) u1 = 1.0d-15
+        z = sqrt(-2.0d0 * log(u1)) * cos(2.0d0 * pi_val * u2)
+    end function
 
     ! =====================================================================
     ! Local matrix helpers for test code (avoid linking issues)
