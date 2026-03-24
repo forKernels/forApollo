@@ -1,15 +1,25 @@
 ! Copyright The Fantastic Planet — By David Clabaugh
 !
-! forapollo_estimate.f90 — Linear Kalman Filter and Extended Kalman Filter
+! forapollo_estimate.f90 — State estimation: KF, EKF, IEKF, UKF, ESKF, SR variants
 !
 ! Core state estimation routines with ternary measurement gating.
 ! All matrices are flat 1D row-major at the bind(C) boundary.
 !
 ! Entry points:
-!   fa_kf_predict   — Linear Kalman predict: x = F*x, P = F*P*F^T + Q
-!   fa_kf_update    — Linear Kalman update with ternary gating
-!   fa_ekf_predict  — Extended Kalman predict via propagator + STM
-!   fa_ekf_update   — Extended Kalman update with ternary gating
+!   fa_kf_predict      — Linear Kalman predict: x = F*x, P = F*P*F^T + Q
+!   fa_kf_update       — Linear Kalman update with ternary gating
+!   fa_ekf_predict     — Extended Kalman predict via propagator + STM
+!   fa_ekf_update      — Extended Kalman update with ternary gating
+!   fa_iekf_update     — Iterated EKF update (re-linearization loop)
+!   fa_ukf_predict     — Unscented Kalman predict (sigma points)
+!   fa_ukf_update      — Unscented Kalman update (sigma points)
+!   fa_eskf_predict    — Error-State Kalman predict (Apollo heritage)
+!   fa_eskf_update     — Error-State Kalman update on error state
+!   fa_eskf_inject     — Inject error state into nominal
+!   fa_srekf_predict   — Square-Root EKF predict (Cholesky factor)
+!   fa_srekf_update    — Square-Root EKF update (Cholesky factor)
+!   fa_srukf_predict   — Square-Root UKF predict (Cholesky factor)
+!   fa_srukf_update    — Square-Root UKF update (Cholesky factor)
 !
 ! Ternary measurement gating:
 !   For each measurement i, compute chi2 = y(i)^2 / S(i,i)
@@ -18,12 +28,14 @@
 !     else                   → validity(i) = +1, fused
 !
 ! Internal matrix helpers (no bind(C), no external deps):
-!   mat_multiply, mat_transpose, mat_add, mat_identity, mat_solve_symm
+!   mat_multiply, mat_transpose, mat_add, mat_subtract, mat_identity,
+!   mat_solve_symm, mat_cholesky, mat_outer, mat_scale, vec_norm
 !
 ! Joseph form for P update: P = (I-KH)*P*(I-KH)^T + K*R*K^T
 ! This is numerically superior to simple (I-KH)*P.
 !
-! Error codes: info = 0 ok, 3 invalid input, 4 propagation/observation failure.
+! Error codes: info = 0 ok, 2 not positive definite, 3 invalid input,
+!              4 propagation/observation failure or max iterations reached.
 !
 ! Row-major convention: element (row, col) = M((row-1)*ncol + col)
 
@@ -713,3 +725,1380 @@ subroutine mat_solve_symm(A, B, n, m_rhs, info)
     deallocate(L)
 
 end subroutine mat_solve_symm
+
+
+! --------------------------------------------------------------------------
+! mat_cholesky — Cholesky decomposition A = L * L^T
+!
+! A(n*n) input symmetric positive definite (flat row-major)
+! L(n*n) output lower triangular (flat row-major)
+! info = 0 success, 2 not positive definite
+! --------------------------------------------------------------------------
+subroutine mat_cholesky(A, L, n, info)
+    use iso_c_binding
+    implicit none
+    integer, intent(in)  :: n
+    real(c_double), intent(in)  :: A(n*n)
+    real(c_double), intent(out) :: L(n*n)
+    integer, intent(out) :: info
+    integer :: i, j, k
+    real(c_double) :: s
+
+    info = 0
+    L(1:n*n) = 0.0d0
+
+    do i = 1, n
+        do j = 1, i
+            s = A((i-1)*n + j)
+            do k = 1, j - 1
+                s = s - L((i-1)*n + k) * L((j-1)*n + k)
+            end do
+            if (i == j) then
+                if (s <= 0.0d0) then
+                    info = 2  ! Not positive definite
+                    return
+                end if
+                L((i-1)*n + j) = sqrt(s)
+            else
+                L((i-1)*n + j) = s / L((j-1)*n + j)
+            end if
+        end do
+    end do
+
+end subroutine mat_cholesky
+
+
+! --------------------------------------------------------------------------
+! mat_subtract — C = A - B, all (m x n) flat row-major
+! C may alias A or B.
+! --------------------------------------------------------------------------
+subroutine mat_subtract(A, B, C, m, n)
+    use iso_c_binding
+    implicit none
+    integer, intent(in) :: m, n
+    real(c_double), intent(in)  :: A(m*n), B(m*n)
+    real(c_double), intent(out) :: C(m*n)
+    integer :: i
+
+    do i = 1, m * n
+        C(i) = A(i) - B(i)
+    end do
+end subroutine mat_subtract
+
+
+! --------------------------------------------------------------------------
+! mat_outer — C = a * b^T, a is (n), b is (m), C is (n x m) flat row-major
+! --------------------------------------------------------------------------
+subroutine mat_outer(a, b, C, n, m)
+    use iso_c_binding
+    implicit none
+    integer, intent(in) :: n, m
+    real(c_double), intent(in)  :: a(n), b(m)
+    real(c_double), intent(out) :: C(n*m)
+    integer :: i, j
+
+    do i = 1, n
+        do j = 1, m
+            C((i-1)*m + j) = a(i) * b(j)
+        end do
+    end do
+end subroutine mat_outer
+
+
+! --------------------------------------------------------------------------
+! mat_scale — A = alpha * A, flat array of length len
+! --------------------------------------------------------------------------
+subroutine mat_scale(A, alpha, len)
+    use iso_c_binding
+    implicit none
+    integer, intent(in) :: len
+    real(c_double), intent(inout) :: A(len)
+    real(c_double), intent(in)    :: alpha
+    integer :: i
+
+    do i = 1, len
+        A(i) = alpha * A(i)
+    end do
+end subroutine mat_scale
+
+
+! --------------------------------------------------------------------------
+! vec_norm — Euclidean norm of a vector
+! --------------------------------------------------------------------------
+function vec_norm(v, n) result(nrm)
+    use iso_c_binding
+    implicit none
+    integer, intent(in) :: n
+    real(c_double), intent(in) :: v(n)
+    real(c_double) :: nrm
+    integer :: i
+
+    nrm = 0.0d0
+    do i = 1, n
+        nrm = nrm + v(i) * v(i)
+    end do
+    nrm = sqrt(nrm)
+end function vec_norm
+
+
+! ==========================================================================
+! fa_iekf_update — Iterated Extended Kalman Filter update
+!
+! Re-linearizes at updated state estimate up to max_iter times.
+! Converges when ||x_new - x_old|| < tol.
+! Each iteration: re-evaluate h(x_i) and H(x_i), compute modified gain.
+! info=4 if max_iter reached without convergence.
+! ==========================================================================
+subroutine fa_iekf_update(n, m, x, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, &
+                           max_iter, tol, validity, info) &
+    bind(C, name="fa_iekf_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, obs_id, nop, max_iter
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: P(n*n)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    type(c_funptr), value              :: dh_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    real(c_double), value, intent(in)  :: tol
+    integer(c_int), intent(out)        :: validity(m)
+    integer(c_int), intent(out)        :: info
+
+    ! Interfaces for observation dispatch
+    interface
+        subroutine fa_observe_dispatch(obs_id, n, x, m, t, obs_params, nop, z_pred, info) &
+            bind(C, name="fa_observe_dispatch")
+            use iso_c_binding
+            integer(c_int), value  :: obs_id, n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+
+        subroutine fa_observe_jacobian(obs_id, n, x, m, t, obs_params, nop, H, info) &
+            bind(C, name="fa_observe_jacobian")
+            use iso_c_binding
+            integer(c_int), value  :: obs_id, n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: H(m*n)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    abstract interface
+        subroutine custom_observe_iekf_t(n, x, m, t, obs_params, nop, z_pred, info) bind(C)
+            use iso_c_binding
+            integer(c_int), value  :: n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+
+        subroutine custom_obs_jac_iekf_t(n, x, m, t, obs_params, nop, H, info) bind(C)
+            use iso_c_binding
+            integer(c_int), value  :: n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: H(m*n)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    procedure(custom_observe_iekf_t), pointer     :: h_custom
+    procedure(custom_obs_jac_iekf_t), pointer      :: dh_custom
+    logical :: use_custom_h, use_custom_dh
+
+    real(c_double), allocatable :: x0(:), xi(:), x_new(:), dx(:)
+    real(c_double), allocatable :: Hi(:), z_pred_i(:), innov(:)
+    real(c_double), allocatable :: HT(:), PHT(:), S(:), S_inv(:), K(:)
+    real(c_double), allocatable :: eye_n(:), IKH(:), IKHP(:), IKHT(:), IKHP_IKHT(:)
+    real(c_double), allocatable :: KR(:), KT(:), KRKT(:)
+    real(c_double) :: chi2, diff_norm
+    real(c_double) :: vec_norm
+    integer :: iter, i, nn, mm, obs_info, solve_info
+
+    info = 0
+    nn = n * n
+    mm = m * m
+
+    if (n <= 0 .or. m <= 0) then
+        info = 3
+        return
+    end if
+
+    use_custom_h  = c_associated(h_ptr)
+    use_custom_dh = c_associated(dh_ptr)
+    if (use_custom_h)  call c_f_procpointer(h_ptr, h_custom)
+    if (use_custom_dh) call c_f_procpointer(dh_ptr, dh_custom)
+
+    allocate(x0(n), xi(n), x_new(n), dx(n))
+    allocate(Hi(m*n), z_pred_i(m), innov(m))
+    allocate(HT(n*m), PHT(n*m), S(mm), S_inv(mm), K(n*m))
+    allocate(eye_n(nn), IKH(nn), IKHP(nn), IKHT(nn), IKHP_IKHT(nn))
+    allocate(KR(n*m), KT(m*n), KRKT(nn))
+
+    ! Save initial state as x0 (linearization reference)
+    x0(1:n) = x(1:n)
+    xi(1:n) = x(1:n)
+
+    ! Iterative re-linearization loop
+    do iter = 1, max_iter
+
+        ! Evaluate h(x_i) at current iterate
+        if (use_custom_h) then
+            call h_custom(n, xi, m, 0.0d0, obs_params, nop, z_pred_i, obs_info)
+        else
+            call fa_observe_dispatch(obs_id, n, xi, m, 0.0d0, obs_params, nop, z_pred_i, obs_info)
+        end if
+        if (obs_info /= 0) then
+            info = 4
+            goto 900
+        end if
+
+        ! Evaluate H(x_i) at current iterate
+        if (use_custom_dh) then
+            call dh_custom(n, xi, m, 0.0d0, obs_params, nop, Hi, obs_info)
+        else
+            call fa_observe_jacobian(obs_id, n, xi, m, 0.0d0, obs_params, nop, Hi, obs_info)
+        end if
+        if (obs_info /= 0) then
+            info = 4
+            goto 900
+        end if
+
+        ! S = H_i * P * H_i^T + R
+        call mat_transpose(Hi, HT, m, n)
+        call mat_multiply(P, HT, PHT, n, n, m)
+        call mat_multiply(Hi, PHT, S, m, n, m)
+        call mat_add(S, R, S, m, m)
+
+        ! K_i = P * H_i^T * S^-1
+        call mat_identity(S_inv, m)
+        call mat_solve_symm(S, S_inv, m, m, solve_info)
+        if (solve_info /= 0) then
+            info = 4
+            goto 900
+        end if
+        call mat_multiply(PHT, S_inv, K, n, m, m)
+
+        ! Innovation: z - h(x_i) - H_i * (x0 - x_i)
+        ! First compute H_i * (x0 - x_i)
+        dx(1:n) = x0(1:n) - xi(1:n)
+        call mat_vec_multiply(Hi, dx, innov, m, n)
+        ! innov = z - z_pred_i - H_i*(x0 - x_i)
+        do i = 1, m
+            innov(i) = z(i) - z_pred_i(i) - innov(i)
+        end do
+
+        ! x_new = x0 + K_i * innov
+        call mat_vec_multiply(K, innov, dx, n, m)
+        x_new(1:n) = x0(1:n) + dx(1:n)
+
+        ! Check convergence
+        dx(1:n) = x_new(1:n) - xi(1:n)
+        diff_norm = vec_norm(dx, n)
+
+        xi(1:n) = x_new(1:n)
+
+        if (diff_norm < tol) exit
+    end do
+
+    ! If we exhausted iterations without converging, set info=4
+    if (iter > max_iter) then
+        info = 4
+    end if
+
+    ! Ternary gating on final innovation
+    ! Recompute z_pred and H at final xi
+    if (use_custom_h) then
+        call h_custom(n, xi, m, 0.0d0, obs_params, nop, z_pred_i, obs_info)
+    else
+        call fa_observe_dispatch(obs_id, n, xi, m, 0.0d0, obs_params, nop, z_pred_i, obs_info)
+    end if
+    if (use_custom_dh) then
+        call dh_custom(n, xi, m, 0.0d0, obs_params, nop, Hi, obs_info)
+    else
+        call fa_observe_jacobian(obs_id, n, xi, m, 0.0d0, obs_params, nop, Hi, obs_info)
+    end if
+
+    ! S_final = H * P * H^T + R
+    call mat_transpose(Hi, HT, m, n)
+    call mat_multiply(P, HT, PHT, n, n, m)
+    call mat_multiply(Hi, PHT, S, m, n, m)
+    call mat_add(S, R, S, m, m)
+
+    ! Ternary gating
+    validity(1:m) = 1
+    do i = 1, m
+        if (S((i-1)*m + i) > 0.0d0) then
+            chi2 = (z(i) - z_pred_i(i))**2 / S((i-1)*m + i)
+        else
+            chi2 = 999.0d0
+        end if
+        if (chi2 > 16.0d0) then
+            validity(i) = -1
+        else if (chi2 > 9.0d0) then
+            validity(i) = 0
+        end if
+    end do
+
+    ! Update state
+    x(1:n) = xi(1:n)
+
+    ! Update P using final H: Joseph form P = (I-KH)*P*(I-KH)^T + K*R*K^T
+    ! Recompute K with final H
+    call mat_identity(S_inv, m)
+    call mat_solve_symm(S, S_inv, m, m, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        goto 900
+    end if
+    call mat_multiply(PHT, S_inv, K, n, m, m)
+
+    ! IKH = I - K * H
+    call mat_identity(eye_n, n)
+    block
+        real(c_double), allocatable :: KH(:)
+        allocate(KH(nn))
+        call mat_multiply(K, Hi, KH, n, m, n)
+        IKH(1:nn) = eye_n(1:nn) - KH(1:nn)
+        deallocate(KH)
+    end block
+
+    call mat_multiply(IKH, P, IKHP, n, n, n)
+    call mat_transpose(IKH, IKHT, n, n)
+    call mat_multiply(IKHP, IKHT, IKHP_IKHT, n, n, n)
+    call mat_multiply(K, R, KR, n, m, m)
+    call mat_transpose(K, KT, n, m)
+    call mat_multiply(KR, KT, KRKT, n, m, n)
+    call mat_add(IKHP_IKHT, KRKT, P, n, n)
+
+900 continue
+    deallocate(x0, xi, x_new, dx)
+    deallocate(Hi, z_pred_i, innov)
+    deallocate(HT, PHT, S, S_inv, K)
+    deallocate(eye_n, IKH, IKHP, IKHT, IKHP_IKHT)
+    deallocate(KR, KT, KRKT)
+
+end subroutine fa_iekf_update
+
+
+! ==========================================================================
+! fa_ukf_predict — Unscented Kalman Filter predict step
+!
+! Generates 2n+1 sigma points, propagates through dynamics, reconstructs
+! predicted mean and covariance.
+! lambda = alpha^2*(n+kappa) - n
+! Default UKF params if passed as 0: alpha=1e-3, beta=2.0, kappa=0.0
+! ==========================================================================
+subroutine fa_ukf_predict(n, x, P, f_ptr, model_id, params, np, Q, dt, &
+                           alpha, beta_ukf, kappa, info) &
+    bind(C, name="fa_ukf_predict")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, model_id, np
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: P(n*n)
+    type(c_funptr), value              :: f_ptr
+    real(c_double), intent(in)         :: params(np)
+    real(c_double), intent(in)         :: Q(n*n)
+    real(c_double), value, intent(in)  :: dt
+    real(c_double), value, intent(in)  :: alpha, beta_ukf, kappa
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for fa_propagate
+    interface
+        subroutine fa_propagate(n, x, u, nu, f_ptr, model_id, params, np, dt, n_steps, info) &
+            bind(C, name="fa_propagate")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, nu, model_id, np, n_steps
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(in)         :: u(nu), params(np)
+            real(c_double), value, intent(in)  :: dt
+            type(c_funptr), value              :: f_ptr
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double) :: a_eff, b_eff, k_eff, lam, scale_factor
+    real(c_double) :: wm0, wc0, wmi
+    integer :: n_sigma, nn, i, j, prop_info, chol_info
+    real(c_double), allocatable :: L(:), Xi(:,:), Xi_prop(:,:)
+    real(c_double), allocatable :: x_pred(:), diff(:), P_new(:), outer_tmp(:)
+    real(c_double) :: u_dummy(1)
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0) then
+        info = 3
+        return
+    end if
+
+    if (dt == 0.0d0) return
+
+    ! Default UKF parameters
+    a_eff = alpha;  if (a_eff == 0.0d0) a_eff = 1.0d-3
+    b_eff = beta_ukf; if (b_eff == 0.0d0) b_eff = 2.0d0
+    k_eff = kappa  ! kappa=0 is valid default
+
+    lam = a_eff * a_eff * (dble(n) + k_eff) - dble(n)
+    scale_factor = dble(n) + lam
+    n_sigma = 2 * n + 1
+
+    ! Weights
+    wm0 = lam / scale_factor
+    wc0 = wm0 + (1.0d0 - a_eff*a_eff + b_eff)
+    wmi = 1.0d0 / (2.0d0 * scale_factor)
+
+    ! Cholesky of (n+lambda)*P
+    allocate(L(nn))
+    block
+        real(c_double), allocatable :: scaled_P(:)
+        allocate(scaled_P(nn))
+        scaled_P(1:nn) = scale_factor * P(1:nn)
+        call mat_cholesky(scaled_P, L, n, chol_info)
+        deallocate(scaled_P)
+    end block
+    if (chol_info /= 0) then
+        info = 2
+        deallocate(L)
+        return
+    end if
+
+    ! Generate sigma points (each column of Xi is a sigma point)
+    allocate(Xi(n, n_sigma), Xi_prop(n, n_sigma))
+
+    ! X_0 = x
+    Xi(1:n, 1) = x(1:n)
+
+    ! X_i = x + L_col_i, X_{n+i} = x - L_col_i
+    ! L is row-major: column j of L = L((i-1)*n + j) for row i
+    do i = 1, n
+        do j = 1, n
+            ! L column i: element at row j is L((j-1)*n + i)
+            Xi(j, 1+i)   = x(j) + L((j-1)*n + i)
+            Xi(j, 1+n+i) = x(j) - L((j-1)*n + i)
+        end do
+    end do
+
+    ! Propagate each sigma point through dynamics
+    u_dummy(1) = 0.0d0
+    do i = 1, n_sigma
+        Xi_prop(1:n, i) = Xi(1:n, i)
+        call fa_propagate(n, Xi_prop(1:n, i), u_dummy, 0, f_ptr, model_id, &
+                          params, np, dt, 10, prop_info)
+        if (prop_info /= 0) then
+            info = 4
+            deallocate(L, Xi, Xi_prop)
+            return
+        end if
+    end do
+
+    ! Reconstruct predicted mean: x_pred = sum(W_mi * X_i)
+    allocate(x_pred(n), diff(n), P_new(nn), outer_tmp(nn))
+    x_pred(1:n) = wm0 * Xi_prop(1:n, 1)
+    do i = 2, n_sigma
+        x_pred(1:n) = x_pred(1:n) + wmi * Xi_prop(1:n, i)
+    end do
+
+    ! Reconstruct predicted covariance: P_pred = sum(W_ci * (Xi - x_pred)(Xi - x_pred)^T) + Q
+    P_new(1:nn) = 0.0d0
+
+    ! Sigma point 0
+    diff(1:n) = Xi_prop(1:n, 1) - x_pred(1:n)
+    call mat_outer(diff, diff, outer_tmp, n, n)
+    call mat_scale(outer_tmp, wc0, nn)
+    call mat_add(P_new, outer_tmp, P_new, n, n)
+
+    ! Sigma points 1..2n
+    do i = 2, n_sigma
+        diff(1:n) = Xi_prop(1:n, i) - x_pred(1:n)
+        call mat_outer(diff, diff, outer_tmp, n, n)
+        call mat_scale(outer_tmp, wmi, nn)
+        call mat_add(P_new, outer_tmp, P_new, n, n)
+    end do
+
+    ! Add process noise
+    call mat_add(P_new, Q, P, n, n)
+    x(1:n) = x_pred(1:n)
+
+    deallocate(L, Xi, Xi_prop, x_pred, diff, P_new, outer_tmp)
+
+end subroutine fa_ukf_predict
+
+
+! ==========================================================================
+! fa_ukf_update — Unscented Kalman Filter update step
+!
+! Generate sigma points, pass through measurement model, compute cross-
+! covariance, Kalman gain, and update state/covariance.
+! ==========================================================================
+subroutine fa_ukf_update(n, m, x, P, z, h_ptr, obs_id, R, obs_params, nop, &
+                          alpha, beta_ukf, kappa, validity, info) &
+    bind(C, name="fa_ukf_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, obs_id, nop
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: P(n*n)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    real(c_double), value, intent(in)  :: alpha, beta_ukf, kappa
+    integer(c_int), intent(out)        :: validity(m)
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for observation dispatch
+    interface
+        subroutine fa_observe_dispatch(obs_id, n, x, m, t, obs_params, nop, z_pred, info) &
+            bind(C, name="fa_observe_dispatch")
+            use iso_c_binding
+            integer(c_int), value  :: obs_id, n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    abstract interface
+        subroutine custom_observe_ukf_t(n, x, m, t, obs_params, nop, z_pred, info) bind(C)
+            use iso_c_binding
+            integer(c_int), value  :: n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    procedure(custom_observe_ukf_t), pointer :: h_custom
+    logical :: use_custom_h
+
+    real(c_double) :: a_eff, b_eff, k_eff, lam, scale_factor
+    real(c_double) :: wm0, wc0, wmi
+    integer :: n_sigma, nn, mm, i, j, chol_info, obs_info, solve_info
+    real(c_double), allocatable :: L(:)
+    real(c_double), allocatable :: Xi(:,:), Zi(:,:)
+    real(c_double), allocatable :: z_pred(:), diff_x(:), diff_z(:)
+    real(c_double), allocatable :: Pzz(:), Pxz(:), Pzz_inv(:), K(:)
+    real(c_double), allocatable :: outer_xz(:), outer_zz(:)
+    real(c_double), allocatable :: KPzz(:), KT(:), KPzzKT(:)
+    real(c_double) :: chi2
+
+    info = 0
+    nn = n * n
+    mm = m * m
+
+    if (n <= 0 .or. m <= 0) then
+        info = 3
+        return
+    end if
+
+    use_custom_h = c_associated(h_ptr)
+    if (use_custom_h) call c_f_procpointer(h_ptr, h_custom)
+
+    ! Default UKF parameters
+    a_eff = alpha;  if (a_eff == 0.0d0) a_eff = 1.0d-3
+    b_eff = beta_ukf; if (b_eff == 0.0d0) b_eff = 2.0d0
+    k_eff = kappa
+
+    lam = a_eff * a_eff * (dble(n) + k_eff) - dble(n)
+    scale_factor = dble(n) + lam
+    n_sigma = 2 * n + 1
+
+    wm0 = lam / scale_factor
+    wc0 = wm0 + (1.0d0 - a_eff*a_eff + b_eff)
+    wmi = 1.0d0 / (2.0d0 * scale_factor)
+
+    ! Cholesky of (n+lambda)*P
+    allocate(L(nn))
+    block
+        real(c_double), allocatable :: scaled_P(:)
+        allocate(scaled_P(nn))
+        scaled_P(1:nn) = scale_factor * P(1:nn)
+        call mat_cholesky(scaled_P, L, n, chol_info)
+        deallocate(scaled_P)
+    end block
+    if (chol_info /= 0) then
+        info = 2
+        deallocate(L)
+        return
+    end if
+
+    ! Generate sigma points
+    allocate(Xi(n, n_sigma), Zi(m, n_sigma))
+    Xi(1:n, 1) = x(1:n)
+    do i = 1, n
+        do j = 1, n
+            Xi(j, 1+i)   = x(j) + L((j-1)*n + i)
+            Xi(j, 1+n+i) = x(j) - L((j-1)*n + i)
+        end do
+    end do
+
+    ! Pass each sigma point through measurement model
+    do i = 1, n_sigma
+        if (use_custom_h) then
+            call h_custom(n, Xi(1:n, i), m, 0.0d0, obs_params, nop, Zi(1:m, i), obs_info)
+        else
+            call fa_observe_dispatch(obs_id, n, Xi(1:n, i), m, 0.0d0, obs_params, nop, Zi(1:m, i), obs_info)
+        end if
+        if (obs_info /= 0) then
+            info = 4
+            deallocate(L, Xi, Zi)
+            return
+        end if
+    end do
+
+    ! Predicted measurement mean: z_pred = sum(W_mi * Z_i)
+    allocate(z_pred(m), diff_x(n), diff_z(m))
+    allocate(Pzz(mm), Pxz(n*m), Pzz_inv(mm), K(n*m))
+    allocate(outer_xz(n*m), outer_zz(mm))
+    allocate(KPzz(n*m), KT(m*n), KPzzKT(nn))
+
+    z_pred(1:m) = wm0 * Zi(1:m, 1)
+    do i = 2, n_sigma
+        z_pred(1:m) = z_pred(1:m) + wmi * Zi(1:m, i)
+    end do
+
+    ! Pzz = sum(W_ci * (Z_i - z_pred)(Z_i - z_pred)^T) + R
+    Pzz(1:mm) = 0.0d0
+    Pxz(1:n*m) = 0.0d0
+
+    ! Sigma point 0
+    diff_z(1:m) = Zi(1:m, 1) - z_pred(1:m)
+    diff_x(1:n) = Xi(1:n, 1) - x(1:n)
+    call mat_outer(diff_z, diff_z, outer_zz, m, m)
+    call mat_scale(outer_zz, wc0, mm)
+    call mat_add(Pzz, outer_zz, Pzz, m, m)
+    call mat_outer(diff_x, diff_z, outer_xz, n, m)
+    call mat_scale(outer_xz, wc0, n*m)
+    call mat_add(Pxz, outer_xz, Pxz, n, m)
+
+    ! Sigma points 1..2n
+    do i = 2, n_sigma
+        diff_z(1:m) = Zi(1:m, i) - z_pred(1:m)
+        diff_x(1:n) = Xi(1:n, i) - x(1:n)
+        call mat_outer(diff_z, diff_z, outer_zz, m, m)
+        call mat_scale(outer_zz, wmi, mm)
+        call mat_add(Pzz, outer_zz, Pzz, m, m)
+        call mat_outer(diff_x, diff_z, outer_xz, n, m)
+        call mat_scale(outer_xz, wmi, n*m)
+        call mat_add(Pxz, outer_xz, Pxz, n, m)
+    end do
+
+    ! Add measurement noise
+    call mat_add(Pzz, R, Pzz, m, m)
+
+    ! Ternary gating on innovation
+    validity(1:m) = 1
+    do i = 1, m
+        if (Pzz((i-1)*m + i) > 0.0d0) then
+            chi2 = (z(i) - z_pred(i))**2 / Pzz((i-1)*m + i)
+        else
+            chi2 = 999.0d0
+        end if
+        if (chi2 > 16.0d0) then
+            validity(i) = -1
+        else if (chi2 > 9.0d0) then
+            validity(i) = 0
+        end if
+    end do
+
+    ! K = Pxz * Pzz^-1
+    Pzz_inv(1:mm) = 0.0d0
+    call mat_identity(Pzz_inv, m)
+    call mat_solve_symm(Pzz, Pzz_inv, m, m, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        deallocate(L, Xi, Zi, z_pred, diff_x, diff_z)
+        deallocate(Pzz, Pxz, Pzz_inv, K, outer_xz, outer_zz)
+        deallocate(KPzz, KT, KPzzKT)
+        return
+    end if
+    call mat_multiply(Pxz, Pzz_inv, K, n, m, m)
+
+    ! x += K * (z - z_pred)
+    diff_z(1:m) = z(1:m) - z_pred(1:m)
+    block
+        real(c_double) :: dx(n)
+        call mat_vec_multiply(K, diff_z, dx, n, m)
+        x(1:n) = x(1:n) + dx(1:n)
+    end block
+
+    ! P -= K * Pzz * K^T
+    ! Recompute Pzz (it was modified by solve) — use Pxz*K^T shortcut: P = P - K * Pzz_orig * K^T
+    ! Actually Pzz was overwritten by solve. Use: P = P - Pxz * K^T (equivalent since K = Pxz * Pzz^-1)
+    ! P_new = P - K * Pzz * K^T. Since Pzz was modified, compute P = P - Pxz * Pzz_inv^T * Pxz^T
+    ! Simplest correct form: P = P - K * S * K^T where S = Pzz before solve
+    ! But Pzz was modified. Use P = P - Pxz * K^T (since K*Pzz = Pxz, so Pxz*K^T = K*Pzz*K^T when Pzz is symmetric)
+    ! Actually: K = Pxz * Pzz^-1, so K * Pzz = Pxz. Then K * Pzz * K^T = Pxz * K^T. Correct.
+    call mat_transpose(K, KT, n, m)
+    call mat_multiply(Pxz, KT, KPzzKT, n, m, n)
+    call mat_subtract(P, KPzzKT, P, n, n)
+
+    deallocate(L, Xi, Zi, z_pred, diff_x, diff_z)
+    deallocate(Pzz, Pxz, Pzz_inv, K, outer_xz, outer_zz)
+    deallocate(KPzz, KT, KPzzKT)
+
+end subroutine fa_ukf_update
+
+
+! ==========================================================================
+! fa_eskf_predict — Error-State Kalman Filter predict
+!
+! Apollo heritage: propagates nominal state via dynamics, error state stays
+! zero, covariance propagated via STM: P = Phi * P * Phi^T + Q
+! ==========================================================================
+subroutine fa_eskf_predict(n, x_nom, dx, P, f_ptr, model_id, params, np, Q, dt, n_steps, info) &
+    bind(C, name="fa_eskf_predict")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, model_id, np, n_steps
+    real(c_double), intent(inout)      :: x_nom(n)
+    real(c_double), intent(inout)      :: dx(n)
+    real(c_double), intent(inout)      :: P(n*n)
+    type(c_funptr), value              :: f_ptr
+    real(c_double), intent(in)         :: params(np)
+    real(c_double), intent(in)         :: Q(n*n)
+    real(c_double), value, intent(in)  :: dt
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for fa_propagate and fa_propagate_stm
+    interface
+        subroutine fa_propagate(n, x, u, nu, f_ptr, model_id, params, np, dt, n_steps, info) &
+            bind(C, name="fa_propagate")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, nu, model_id, np, n_steps
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(in)         :: u(nu), params(np)
+            real(c_double), value, intent(in)  :: dt
+            type(c_funptr), value              :: f_ptr
+            integer(c_int), intent(out)        :: info
+        end subroutine
+
+        subroutine fa_propagate_stm(n, x, phi, u, nu, f_ptr, df_ptr, model_id, params, np, dt, n_steps, info) &
+            bind(C, name="fa_propagate_stm")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, nu, model_id, np, n_steps
+            real(c_double), intent(inout)      :: x(n), phi(n*n)
+            real(c_double), intent(in)         :: u(nu), params(np)
+            real(c_double), value, intent(in)  :: dt
+            type(c_funptr), value              :: f_ptr, df_ptr
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: Phi(:), PhiP(:), PhiT(:), PhiPPhiT(:)
+    real(c_double) :: u_dummy(1)
+    integer :: nn, prop_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0) then
+        info = 3
+        return
+    end if
+
+    if (dt == 0.0d0) return
+
+    u_dummy(1) = 0.0d0
+
+    allocate(Phi(nn), PhiP(nn), PhiT(nn), PhiPPhiT(nn))
+
+    ! Initialize Phi to identity
+    call mat_identity(Phi, n)
+
+    ! Propagate nominal state and get STM
+    ! We need both state propagation and STM. Use fa_propagate_stm with a copy.
+    block
+        real(c_double), allocatable :: x_copy(:)
+        allocate(x_copy(n))
+        x_copy(1:n) = x_nom(1:n)
+        call fa_propagate_stm(n, x_copy, Phi, u_dummy, 0, f_ptr, c_null_funptr, model_id, &
+                              params, np, dt, n_steps, prop_info)
+        x_nom(1:n) = x_copy(1:n)
+        deallocate(x_copy)
+    end block
+    if (prop_info /= 0) then
+        info = 4
+        deallocate(Phi, PhiP, PhiT, PhiPPhiT)
+        return
+    end if
+
+    ! Error state stays zero after prediction (reset after injection)
+    dx(1:n) = 0.0d0
+
+    ! Propagate covariance: P = Phi * P * Phi^T + Q
+    call mat_multiply(Phi, P, PhiP, n, n, n)
+    call mat_transpose(Phi, PhiT, n, n)
+    call mat_multiply(PhiP, PhiT, PhiPPhiT, n, n, n)
+    call mat_add(PhiPPhiT, Q, P, n, n)
+
+    deallocate(Phi, PhiP, PhiT, PhiPPhiT)
+
+end subroutine fa_eskf_predict
+
+
+! ==========================================================================
+! fa_eskf_update — Error-State Kalman Filter update
+!
+! Innovation: y = z - h(x_nom)
+! H evaluated at x_nom
+! Standard Kalman update on error state dx: dx = K * y, P = (I-KH)*P
+! ==========================================================================
+subroutine fa_eskf_update(n, m, x_nom, dx, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, &
+                           validity, info) &
+    bind(C, name="fa_eskf_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, obs_id, nop
+    real(c_double), intent(in)         :: x_nom(n)
+    real(c_double), intent(inout)      :: dx(n)
+    real(c_double), intent(inout)      :: P(n*n)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    type(c_funptr), value              :: dh_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    integer(c_int), intent(out)        :: validity(m)
+    integer(c_int), intent(out)        :: info
+
+    ! Interfaces for observation dispatch
+    interface
+        subroutine fa_observe_dispatch(obs_id, n, x, m, t, obs_params, nop, z_pred, info) &
+            bind(C, name="fa_observe_dispatch")
+            use iso_c_binding
+            integer(c_int), value  :: obs_id, n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+
+        subroutine fa_observe_jacobian(obs_id, n, x, m, t, obs_params, nop, H, info) &
+            bind(C, name="fa_observe_jacobian")
+            use iso_c_binding
+            integer(c_int), value  :: obs_id, n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: H(m*n)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    abstract interface
+        subroutine custom_observe_eskf_t(n, x, m, t, obs_params, nop, z_pred, info) bind(C)
+            use iso_c_binding
+            integer(c_int), value  :: n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: z_pred(m)
+            integer(c_int), intent(out) :: info
+        end subroutine
+
+        subroutine custom_obs_jac_eskf_t(n, x, m, t, obs_params, nop, H, info) bind(C)
+            use iso_c_binding
+            integer(c_int), value  :: n, m, nop
+            real(c_double), value  :: t
+            real(c_double), intent(in)  :: x(n)
+            real(c_double), intent(in)  :: obs_params(nop)
+            real(c_double), intent(out) :: H(m*n)
+            integer(c_int), intent(out) :: info
+        end subroutine
+    end interface
+
+    procedure(custom_observe_eskf_t), pointer     :: h_custom
+    procedure(custom_obs_jac_eskf_t), pointer      :: dh_custom
+    logical :: use_custom_h, use_custom_dh
+
+    real(c_double), allocatable :: z_pred(:), y(:), H(:)
+    real(c_double), allocatable :: HT(:), PHT(:), S(:), S_inv(:), K(:)
+    real(c_double), allocatable :: eye_n(:), IKH(:), IKHP(:), IKHT(:), IKHP_IKHT(:)
+    real(c_double), allocatable :: KR(:), KT_mat(:), KRKT(:)
+    real(c_double) :: chi2
+    integer :: i, nn, mm, obs_info, solve_info
+
+    info = 0
+    nn = n * n
+    mm = m * m
+
+    if (n <= 0 .or. m <= 0) then
+        info = 3
+        return
+    end if
+
+    use_custom_h  = c_associated(h_ptr)
+    use_custom_dh = c_associated(dh_ptr)
+    if (use_custom_h)  call c_f_procpointer(h_ptr, h_custom)
+    if (use_custom_dh) call c_f_procpointer(dh_ptr, dh_custom)
+
+    allocate(z_pred(m), y(m), H(m*n))
+    allocate(HT(n*m), PHT(n*m), S(mm), S_inv(mm), K(n*m))
+    allocate(eye_n(nn), IKH(nn), IKHP(nn), IKHT(nn), IKHP_IKHT(nn))
+    allocate(KR(n*m), KT_mat(m*n), KRKT(nn))
+
+    ! Compute z_pred = h(x_nom)
+    if (use_custom_h) then
+        call h_custom(n, x_nom, m, 0.0d0, obs_params, nop, z_pred, obs_info)
+    else
+        call fa_observe_dispatch(obs_id, n, x_nom, m, 0.0d0, obs_params, nop, z_pred, obs_info)
+    end if
+    if (obs_info /= 0) then
+        info = 4
+        goto 910
+    end if
+
+    ! Compute H at x_nom
+    if (use_custom_dh) then
+        call dh_custom(n, x_nom, m, 0.0d0, obs_params, nop, H, obs_info)
+    else
+        call fa_observe_jacobian(obs_id, n, x_nom, m, 0.0d0, obs_params, nop, H, obs_info)
+    end if
+    if (obs_info /= 0) then
+        info = 4
+        goto 910
+    end if
+
+    ! Innovation: y = z - h(x_nom)
+    y(1:m) = z(1:m) - z_pred(1:m)
+
+    ! S = H * P * H^T + R
+    call mat_transpose(H, HT, m, n)
+    call mat_multiply(P, HT, PHT, n, n, m)
+    call mat_multiply(H, PHT, S, m, n, m)
+    call mat_add(S, R, S, m, m)
+
+    ! Ternary gating
+    validity(1:m) = 1
+    do i = 1, m
+        if (S((i-1)*m + i) > 0.0d0) then
+            chi2 = y(i) * y(i) / S((i-1)*m + i)
+        else
+            chi2 = 999.0d0
+        end if
+        if (chi2 > 16.0d0) then
+            validity(i) = -1
+        else if (chi2 > 9.0d0) then
+            validity(i) = 0
+        end if
+    end do
+
+    ! K = P * H^T * S^-1
+    call mat_identity(S_inv, m)
+    call mat_solve_symm(S, S_inv, m, m, solve_info)
+    if (solve_info /= 0) then
+        info = 4
+        goto 910
+    end if
+    call mat_multiply(PHT, S_inv, K, n, m, m)
+
+    ! dx = K * y (update error state)
+    call mat_vec_multiply(K, y, dx, n, m)
+
+    ! Joseph form: P = (I-KH)*P*(I-KH)^T + K*R*K^T
+    call mat_identity(eye_n, n)
+    block
+        real(c_double), allocatable :: KH(:)
+        allocate(KH(nn))
+        call mat_multiply(K, H, KH, n, m, n)
+        IKH(1:nn) = eye_n(1:nn) - KH(1:nn)
+        deallocate(KH)
+    end block
+
+    call mat_multiply(IKH, P, IKHP, n, n, n)
+    call mat_transpose(IKH, IKHT, n, n)
+    call mat_multiply(IKHP, IKHT, IKHP_IKHT, n, n, n)
+    call mat_multiply(K, R, KR, n, m, m)
+    call mat_transpose(K, KT_mat, n, m)
+    call mat_multiply(KR, KT_mat, KRKT, n, m, n)
+    call mat_add(IKHP_IKHT, KRKT, P, n, n)
+
+910 continue
+    deallocate(z_pred, y, H)
+    deallocate(HT, PHT, S, S_inv, K)
+    deallocate(eye_n, IKH, IKHP, IKHT, IKHP_IKHT)
+    deallocate(KR, KT_mat, KRKT)
+
+end subroutine fa_eskf_update
+
+
+! ==========================================================================
+! fa_eskf_inject — Inject error state into nominal state
+!
+! x_nom = x_nom + dx
+! dx = 0 (reset error state after injection)
+! P stays unchanged (already reflects uncertainty)
+! ==========================================================================
+subroutine fa_eskf_inject(n, x_nom, dx, P, info) bind(C, name="fa_eskf_inject")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n
+    real(c_double), intent(inout)      :: x_nom(n)
+    real(c_double), intent(inout)      :: dx(n)
+    real(c_double), intent(inout)      :: P(n*n)
+    integer(c_int), intent(out)        :: info
+
+    integer :: i
+
+    info = 0
+
+    if (n <= 0) then
+        info = 3
+        return
+    end if
+
+    ! Inject error into nominal
+    ! For general states, additive injection: x_nom = x_nom + dx
+    ! TODO: For quaternion states, use multiplicative correction:
+    !   q_nom = delta_q(dx(quat_indices)) * q_nom
+    do i = 1, n
+        x_nom(i) = x_nom(i) + dx(i)
+    end do
+
+    ! Reset error state
+    dx(1:n) = 0.0d0
+
+    ! P stays — it already reflects the updated uncertainty
+
+end subroutine fa_eskf_inject
+
+
+! ==========================================================================
+! fa_srekf_predict — Square-Root EKF predict step
+!
+! S(n*n) — lower Cholesky factor of P (P = S*S^T), flat row-major
+! Sq(n*n) — lower Cholesky factor of Q
+!
+! Simplified implementation: convert S→P, run regular EKF predict, convert P→S
+! TODO: Proper QR-based implementation: form [Phi*S, Sq], QR factorize
+!       to get new S directly without forming full P. This avoids the
+!       numerical loss of squaring then taking sqrt.
+! ==========================================================================
+subroutine fa_srekf_predict(n, x, S, f_ptr, df_ptr, model_id, params, np, Sq, dt, n_steps, info) &
+    bind(C, name="fa_srekf_predict")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, model_id, np, n_steps
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: S(n*n)
+    type(c_funptr), value              :: f_ptr
+    type(c_funptr), value              :: df_ptr
+    real(c_double), intent(in)         :: Sq(n*n)
+    real(c_double), value, intent(in)  :: dt
+    real(c_double), intent(in)         :: params(np)
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for fa_ekf_predict
+    interface
+        subroutine fa_ekf_predict(n, x, P, f_ptr, df_ptr, Q, dt, model_id, params, np, n_steps, info) &
+            bind(C, name="fa_ekf_predict")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, model_id, np, n_steps
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(inout)      :: P(n*n)
+            type(c_funptr), value              :: f_ptr, df_ptr
+            real(c_double), intent(in)         :: Q(n*n)
+            real(c_double), value, intent(in)  :: dt
+            real(c_double), intent(in)         :: params(np)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: P(:), Q(:), ST(:), SqT(:)
+    integer :: nn, chol_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0) then
+        info = 3
+        return
+    end if
+
+    allocate(P(nn), Q(nn), ST(nn), SqT(nn))
+
+    ! Convert S → P = S * S^T
+    call mat_transpose(S, ST, n, n)
+    call mat_multiply(S, ST, P, n, n, n)
+
+    ! Convert Sq → Q = Sq * Sq^T
+    call mat_transpose(Sq, SqT, n, n)
+    call mat_multiply(Sq, SqT, Q, n, n, n)
+
+    ! Run regular EKF predict
+    call fa_ekf_predict(n, x, P, f_ptr, df_ptr, Q, dt, model_id, params, np, n_steps, info)
+
+    if (info /= 0) then
+        deallocate(P, Q, ST, SqT)
+        return
+    end if
+
+    ! Convert P → S via Cholesky
+    call mat_cholesky(P, S, n, chol_info)
+    if (chol_info /= 0) then
+        info = 2
+    end if
+
+    deallocate(P, Q, ST, SqT)
+
+end subroutine fa_srekf_predict
+
+
+! ==========================================================================
+! fa_srekf_update — Square-Root EKF update step
+!
+! Simplified: convert S→P, run regular EKF update, Cholesky P→S.
+! TODO: Proper rank-1 Cholesky update/downdate for efficiency.
+! ==========================================================================
+subroutine fa_srekf_update(n, m, x, S, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info) &
+    bind(C, name="fa_srekf_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, obs_id, nop
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: S(n*n)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    type(c_funptr), value              :: dh_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    integer(c_int), intent(out)        :: validity(m)
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for fa_ekf_update
+    interface
+        subroutine fa_ekf_update(n, m, x, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info) &
+            bind(C, name="fa_ekf_update")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, m, obs_id, nop
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(inout)      :: P(n*n)
+            real(c_double), intent(in)         :: z(m)
+            type(c_funptr), value              :: h_ptr, dh_ptr
+            real(c_double), intent(in)         :: R(m*m)
+            real(c_double), intent(in)         :: obs_params(nop)
+            integer(c_int), intent(out)        :: validity(m)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: P(:), ST(:)
+    integer :: nn, chol_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0 .or. m <= 0) then
+        info = 3
+        return
+    end if
+
+    allocate(P(nn), ST(nn))
+
+    ! Convert S → P = S * S^T
+    call mat_transpose(S, ST, n, n)
+    call mat_multiply(S, ST, P, n, n, n)
+
+    ! Run regular EKF update
+    call fa_ekf_update(n, m, x, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info)
+
+    if (info /= 0) then
+        deallocate(P, ST)
+        return
+    end if
+
+    ! Convert P → S via Cholesky
+    call mat_cholesky(P, S, n, chol_info)
+    if (chol_info /= 0) then
+        info = 2
+    end if
+
+    deallocate(P, ST)
+
+end subroutine fa_srekf_update
+
+
+! ==========================================================================
+! fa_srukf_predict — Square-Root UKF predict step
+!
+! Simplified: convert S→P, run regular UKF predict, Cholesky P→S.
+! TODO: Proper SR-UKF using QR decomposition on sigma point residuals
+!       for direct square-root factor propagation.
+! ==========================================================================
+subroutine fa_srukf_predict(n, x, S, f_ptr, model_id, params, np, Sq, dt, &
+                             alpha, beta_ukf, kappa, info) &
+    bind(C, name="fa_srukf_predict")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, model_id, np
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: S(n*n)
+    type(c_funptr), value              :: f_ptr
+    real(c_double), intent(in)         :: params(np)
+    real(c_double), intent(in)         :: Sq(n*n)
+    real(c_double), value, intent(in)  :: dt
+    real(c_double), value, intent(in)  :: alpha, beta_ukf, kappa
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for fa_ukf_predict
+    interface
+        subroutine fa_ukf_predict(n, x, P, f_ptr, model_id, params, np, Q, dt, &
+                                   alpha, beta_ukf, kappa, info) &
+            bind(C, name="fa_ukf_predict")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, model_id, np
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(inout)      :: P(n*n)
+            type(c_funptr), value              :: f_ptr
+            real(c_double), intent(in)         :: params(np)
+            real(c_double), intent(in)         :: Q(n*n)
+            real(c_double), value, intent(in)  :: dt
+            real(c_double), value, intent(in)  :: alpha, beta_ukf, kappa
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: P(:), Q(:), ST(:), SqT(:)
+    integer :: nn, chol_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0) then
+        info = 3
+        return
+    end if
+
+    allocate(P(nn), Q(nn), ST(nn), SqT(nn))
+
+    ! Convert S → P = S * S^T
+    call mat_transpose(S, ST, n, n)
+    call mat_multiply(S, ST, P, n, n, n)
+
+    ! Convert Sq → Q = Sq * Sq^T
+    call mat_transpose(Sq, SqT, n, n)
+    call mat_multiply(Sq, SqT, Q, n, n, n)
+
+    ! Run regular UKF predict
+    call fa_ukf_predict(n, x, P, f_ptr, model_id, params, np, Q, dt, alpha, beta_ukf, kappa, info)
+
+    if (info /= 0) then
+        deallocate(P, Q, ST, SqT)
+        return
+    end if
+
+    ! Convert P → S via Cholesky
+    call mat_cholesky(P, S, n, chol_info)
+    if (chol_info /= 0) then
+        info = 2
+    end if
+
+    deallocate(P, Q, ST, SqT)
+
+end subroutine fa_srukf_predict
+
+
+! ==========================================================================
+! fa_srukf_update — Square-Root UKF update step
+!
+! Simplified: convert S→P, run regular UKF update, Cholesky P→S.
+! TODO: Proper SR-UKF update using QR decomposition on measurement
+!       sigma point residuals for direct square-root factor update.
+! ==========================================================================
+subroutine fa_srukf_update(n, m, x, S, z, h_ptr, obs_id, R, obs_params, nop, &
+                            alpha, beta_ukf, kappa, validity, info) &
+    bind(C, name="fa_srukf_update")
+    use iso_c_binding
+    implicit none
+
+    integer(c_int), value, intent(in)  :: n, m, obs_id, nop
+    real(c_double), intent(inout)      :: x(n)
+    real(c_double), intent(inout)      :: S(n*n)
+    real(c_double), intent(in)         :: z(m)
+    type(c_funptr), value              :: h_ptr
+    real(c_double), intent(in)         :: R(m*m)
+    real(c_double), intent(in)         :: obs_params(nop)
+    real(c_double), value, intent(in)  :: alpha, beta_ukf, kappa
+    integer(c_int), intent(out)        :: validity(m)
+    integer(c_int), intent(out)        :: info
+
+    ! Interface for fa_ukf_update
+    interface
+        subroutine fa_ukf_update(n, m, x, P, z, h_ptr, obs_id, R, obs_params, nop, &
+                                  alpha, beta_ukf, kappa, validity, info) &
+            bind(C, name="fa_ukf_update")
+            use iso_c_binding
+            integer(c_int), value, intent(in)  :: n, m, obs_id, nop
+            real(c_double), intent(inout)      :: x(n)
+            real(c_double), intent(inout)      :: P(n*n)
+            real(c_double), intent(in)         :: z(m)
+            type(c_funptr), value              :: h_ptr
+            real(c_double), intent(in)         :: R(m*m)
+            real(c_double), intent(in)         :: obs_params(nop)
+            real(c_double), value, intent(in)  :: alpha, beta_ukf, kappa
+            integer(c_int), intent(out)        :: validity(m)
+            integer(c_int), intent(out)        :: info
+        end subroutine
+    end interface
+
+    real(c_double), allocatable :: P(:), ST(:)
+    integer :: nn, chol_info
+
+    info = 0
+    nn = n * n
+
+    if (n <= 0 .or. m <= 0) then
+        info = 3
+        return
+    end if
+
+    allocate(P(nn), ST(nn))
+
+    ! Convert S → P = S * S^T
+    call mat_transpose(S, ST, n, n)
+    call mat_multiply(S, ST, P, n, n, n)
+
+    ! Run regular UKF update
+    call fa_ukf_update(n, m, x, P, z, h_ptr, obs_id, R, obs_params, nop, alpha, beta_ukf, kappa, validity, info)
+
+    if (info /= 0) then
+        deallocate(P, ST)
+        return
+    end if
+
+    ! Convert P → S via Cholesky
+    call mat_cholesky(P, S, n, chol_info)
+    if (chol_info /= 0) then
+        info = 2
+    end if
+
+    deallocate(P, ST)
+
+end subroutine fa_srukf_update
