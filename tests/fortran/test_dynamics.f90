@@ -72,6 +72,17 @@ program test_dynamics
     call test_const_accel_bad_n()
     call test_const_turn_bad_n()
 
+    ! --- Orbital dynamics tests ---
+    call test_kepler_circular_orbit()
+    call test_kepler_jacobian()
+    call test_j2_perturbation()
+    call test_j2_jacobian()
+    call test_cr3bp_l1()
+    call test_cr3bp_jacobian()
+    call test_drag_model()
+    call test_drag_jacobian()
+    call test_orbital_edge_cases()
+
     ! --- Summary ---
     write(*,*)
     write(*,'(A,I0,A,I0,A)') '=== ', n_passed, ' passed, ', n_failed, ' failed ==='
@@ -384,5 +395,356 @@ contains
         end if
         call report('const_turn_bad_n', pass)
     end subroutine test_const_turn_bad_n
+
+    ! =========================================================================
+    ! Helper: verify analytic Jacobian against central finite difference
+    ! with actual params array (for orbital models that need real parameters)
+    ! =========================================================================
+    subroutine verify_jacobian_params(test_name, model_id_val, n_val, x, &
+                                       params_val, np_val, tol, pass)
+        character(len=*), intent(in)  :: test_name
+        integer, intent(in)           :: model_id_val, n_val, np_val
+        real(c_double), intent(in)    :: x(n_val), params_val(np_val)
+        real(c_double), intent(in)    :: tol
+        logical, intent(out)          :: pass
+
+        real(c_double) :: F_analytic(n_val * n_val)
+        real(c_double) :: x_plus(n_val), x_minus(n_val)
+        real(c_double) :: f_plus(n_val), f_minus(n_val)
+        real(c_double) :: F_fd_col(n_val)
+        real(c_double) :: dummy_u(1)
+        real(c_double) :: h, diff, scale_h
+        integer(c_int) :: info
+        integer :: i, j
+
+        dummy_u(1) = 0.0d0
+
+        ! Get analytic Jacobian
+        call fa_dynamics_jacobian(model_id_val, n_val, x, dummy_u, 1, 0.0d0, &
+                                   params_val, np_val, F_analytic, info)
+        if (info /= 0) then
+            write(*,'(A,A,A,I0)') '  FAIL [', test_name, &
+                '] analytic Jacobian returned info=', info
+            pass = .false.
+            return
+        end if
+
+        pass = .true.
+
+        ! Central finite difference for each column j
+        do j = 1, n_val
+            ! Scale h relative to state magnitude for numerical stability
+            scale_h = max(abs(x(j)), 1.0d0)
+            h = 1.0d-7 * scale_h
+
+            x_plus(1:n_val)  = x(1:n_val)
+            x_minus(1:n_val) = x(1:n_val)
+            x_plus(j)  = x(j) + h
+            x_minus(j) = x(j) - h
+
+            call fa_dynamics_dispatch(model_id_val, n_val, x_plus, dummy_u, 1, &
+                                       0.0d0, params_val, np_val, f_plus, info)
+            call fa_dynamics_dispatch(model_id_val, n_val, x_minus, dummy_u, 1, &
+                                       0.0d0, params_val, np_val, f_minus, info)
+
+            F_fd_col(1:n_val) = (f_plus(1:n_val) - f_minus(1:n_val)) / (2.0d0 * h)
+
+            do i = 1, n_val
+                diff = abs(F_analytic((i-1)*n_val + j) - F_fd_col(i))
+                ! Use relative tolerance for large values
+                if (diff > tol * max(abs(F_analytic((i-1)*n_val+j)), abs(F_fd_col(i)), 1.0d0)) then
+                    write(*,'(A,A,A,I0,A,I0,A,ES14.7,A,ES14.7,A,ES10.3)') &
+                        '  FAIL [', test_name, '] F(', i, ',', j, &
+                        '): analytic=', F_analytic((i-1)*n_val + j), &
+                        ' fd=', F_fd_col(i), ' diff=', diff
+                    pass = .false.
+                end if
+            end do
+        end do
+
+    end subroutine verify_jacobian_params
+
+    ! =========================================================================
+    ! Test: Kepler circular orbit
+    ! x=[6778e3, 0, 0, 0, 7669, 0], mu=3.986004418e14
+    ! Verify velocity propagation and radial gravity
+    ! =========================================================================
+    subroutine test_kepler_circular_orbit()
+        real(c_double) :: x(6), x_dot(6), params(1)
+        real(c_double) :: dummy_u(1)
+        integer(c_int) :: info
+        logical :: pass
+        real(c_double) :: r, expected_grav
+
+        x = [6778.0d3, 0.0d0, 0.0d0, 0.0d0, 7669.0d0, 0.0d0]
+        params(1) = 3.986004418d14  ! mu for Earth
+        dummy_u(1) = 0.0d0
+
+        call fa_dynamics_dispatch(1, 6, x, dummy_u, 1, 0.0d0, params, 1, x_dot, info)
+
+        pass = (info == 0)
+        if (.not. pass) then
+            write(*,'(A,I0)') '  FAIL [kepler_circular] info=', info
+            call report('kepler_circular_orbit', pass)
+            return
+        end if
+
+        ! x_dot(1:3) should be velocity = [0, 7669, 0]
+        if (abs(x_dot(1) - 0.0d0) > 1.0d-10) pass = .false.
+        if (abs(x_dot(2) - 7669.0d0) > 1.0d-10) pass = .false.
+        if (abs(x_dot(3) - 0.0d0) > 1.0d-10) pass = .false.
+
+        ! x_dot(4) should be -mu/r^2 (radial gravity)
+        r = 6778.0d3
+        expected_grav = -params(1) / (r * r)   ! approx -8.674
+        if (abs(x_dot(4) - expected_grav) > 1.0d-3) then
+            write(*,'(A,ES14.7,A,ES14.7)') '  FAIL [kepler_circular] ax=', &
+                x_dot(4), ' expected=', expected_grav
+            pass = .false.
+        end if
+
+        ! x_dot(5) and x_dot(6) should be 0 (no tangential/out-of-plane gravity)
+        if (abs(x_dot(5)) > 1.0d-10) pass = .false.
+        if (abs(x_dot(6)) > 1.0d-10) pass = .false.
+
+        call report('kepler_circular_orbit', pass)
+    end subroutine test_kepler_circular_orbit
+
+    ! =========================================================================
+    ! Test: Kepler Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_kepler_jacobian()
+        real(c_double) :: x(6), params(1)
+        logical :: pass
+
+        x = [6778.0d3, 0.0d0, 0.0d0, 0.0d0, 7669.0d0, 0.0d0]
+        params(1) = 3.986004418d14
+
+        call verify_jacobian_params('kepler_jacobian', 1, 6, x, params, 1, 1.0d-5, pass)
+        call report('kepler_jacobian', pass)
+    end subroutine test_kepler_jacobian
+
+    ! =========================================================================
+    ! Test: J2 perturbation
+    ! Same orbit + J2=1.08263e-3, R_eq=6378137
+    ! At equatorial orbit (z=0), J2 should add non-zero x-acceleration
+    ! =========================================================================
+    subroutine test_j2_perturbation()
+        real(c_double) :: x(6), x_dot_kep(6), x_dot_j2(6), params_kep(1), params_j2(3)
+        real(c_double) :: dummy_u(1)
+        integer(c_int) :: info
+        logical :: pass
+        real(c_double) :: delta_ax
+
+        x = [6778.0d3, 0.0d0, 0.0d0, 0.0d0, 7669.0d0, 0.0d0]
+        params_kep(1) = 3.986004418d14
+        params_j2 = [3.986004418d14, 1.08263d-3, 6378137.0d0]
+        dummy_u(1) = 0.0d0
+
+        ! Get pure Kepler
+        call fa_dynamics_dispatch(1, 6, x, dummy_u, 1, 0.0d0, params_kep, 1, x_dot_kep, info)
+        ! Get J2
+        call fa_dynamics_dispatch(2, 6, x, dummy_u, 1, 0.0d0, params_j2, 3, x_dot_j2, info)
+
+        pass = (info == 0)
+        if (.not. pass) then
+            write(*,'(A,I0)') '  FAIL [j2_perturbation] info=', info
+            call report('j2_perturbation', pass)
+            return
+        end if
+
+        ! J2 should add a non-zero perturbation to x-acceleration
+        delta_ax = x_dot_j2(4) - x_dot_kep(4)
+        if (abs(delta_ax) < 1.0d-10) then
+            write(*,'(A,ES14.7)') '  FAIL [j2_perturbation] delta_ax too small: ', delta_ax
+            pass = .false.
+        end if
+
+        ! Velocity components should be identical (J2 only affects acceleration)
+        if (abs(x_dot_j2(1) - x_dot_kep(1)) > 1.0d-14) pass = .false.
+        if (abs(x_dot_j2(2) - x_dot_kep(2)) > 1.0d-14) pass = .false.
+        if (abs(x_dot_j2(3) - x_dot_kep(3)) > 1.0d-14) pass = .false.
+
+        call report('j2_perturbation', pass)
+    end subroutine test_j2_perturbation
+
+    ! =========================================================================
+    ! Test: J2 Jacobian (finite-difference verification)
+    ! Use an inclined orbit state to exercise z-dependent terms
+    ! =========================================================================
+    subroutine test_j2_jacobian()
+        real(c_double) :: x(6), params(3)
+        logical :: pass
+
+        ! Inclined orbit: nonzero z component to exercise all J2 partials
+        x = [4000.0d3, 3000.0d3, 2000.0d3, -1000.0d0, 5000.0d0, 3000.0d0]
+        params = [3.986004418d14, 1.08263d-3, 6378137.0d0]
+
+        call verify_jacobian_params('j2_jacobian', 2, 6, x, params, 3, 1.0d-4, pass)
+        call report('j2_jacobian', pass)
+    end subroutine test_j2_jacobian
+
+    ! =========================================================================
+    ! Test: CR3BP near L1
+    ! Earth-Moon system, mu_ratio ~ 0.01215
+    ! State near L1: [0.8369, 0, 0, 0, 0, 0]
+    ! Accelerations should be small (near equilibrium)
+    ! =========================================================================
+    subroutine test_cr3bp_l1()
+        real(c_double) :: x(6), x_dot(6), params(1)
+        real(c_double) :: dummy_u(1)
+        integer(c_int) :: info
+        logical :: pass
+        real(c_double) :: accel_mag
+
+        x = [0.8369d0, 0.0d0, 0.0d0, 0.0d0, 0.0d0, 0.0d0]
+        params(1) = 0.01215d0  ! Earth-Moon mass ratio
+        dummy_u(1) = 0.0d0
+
+        call fa_dynamics_dispatch(3, 6, x, dummy_u, 1, 0.0d0, params, 1, x_dot, info)
+
+        pass = (info == 0)
+        if (.not. pass) then
+            write(*,'(A,I0)') '  FAIL [cr3bp_l1] info=', info
+            call report('cr3bp_l1_equilibrium', pass)
+            return
+        end if
+
+        ! Velocity derivatives should be zero (zero velocity in)
+        if (abs(x_dot(1)) > 1.0d-14) pass = .false.
+        if (abs(x_dot(2)) > 1.0d-14) pass = .false.
+        if (abs(x_dot(3)) > 1.0d-14) pass = .false.
+
+        ! Accelerations should be small near L1 (not exact, so allow tolerance)
+        ! L1 is approximate, so just check magnitude is reasonably small
+        accel_mag = sqrt(x_dot(4)**2 + x_dot(5)**2 + x_dot(6)**2)
+        if (accel_mag > 0.5d0) then
+            write(*,'(A,ES14.7)') '  FAIL [cr3bp_l1] accel magnitude too large: ', accel_mag
+            pass = .false.
+        end if
+
+        call report('cr3bp_l1_equilibrium', pass)
+    end subroutine test_cr3bp_l1
+
+    ! =========================================================================
+    ! Test: CR3BP Jacobian (finite-difference verification)
+    ! Use a general state with nonzero velocity for full partial coverage
+    ! =========================================================================
+    subroutine test_cr3bp_jacobian()
+        real(c_double) :: x(6), params(1)
+        logical :: pass
+
+        x = [0.5d0, 0.1d0, 0.05d0, 0.01d0, -0.02d0, 0.005d0]
+        params(1) = 0.01215d0
+
+        call verify_jacobian_params('cr3bp_jacobian', 3, 6, x, params, 1, 1.0d-5, pass)
+        call report('cr3bp_jacobian', pass)
+    end subroutine test_cr3bp_jacobian
+
+    ! =========================================================================
+    ! Test: Drag model
+    ! LEO orbit with drag. Verify drag acceleration opposes velocity direction.
+    ! =========================================================================
+    subroutine test_drag_model()
+        real(c_double) :: x_kep(6), x_drag(7), x_dot_kep(6), x_dot_drag(7)
+        real(c_double) :: params_kep(1), params_drag(4)
+        real(c_double) :: dummy_u(1)
+        integer(c_int) :: info
+        logical :: pass
+        real(c_double) :: drag_ax, drag_ay, drag_az, dot_product_val
+
+        ! Kepler reference (no drag)
+        x_kep = [6778.0d3, 0.0d0, 0.0d0, 0.0d0, 7669.0d0, 0.0d0]
+        params_kep(1) = 3.986004418d14
+        dummy_u(1) = 0.0d0
+
+        call fa_dynamics_dispatch(1, 6, x_kep, dummy_u, 1, 0.0d0, params_kep, 1, x_dot_kep, info)
+
+        ! Drag model: same orbit with ballistic coefficient
+        x_drag = [6778.0d3, 0.0d0, 0.0d0, 0.0d0, 7669.0d0, 0.0d0, 0.01d0]
+        ! params: mu, rho0, h_scale, R_body
+        params_drag = [3.986004418d14, 1.225d0, 8500.0d0, 6371.0d3]
+
+        call fa_dynamics_dispatch(4, 7, x_drag, dummy_u, 1, 0.0d0, params_drag, 4, x_dot_drag, info)
+
+        pass = (info == 0)
+        if (.not. pass) then
+            write(*,'(A,I0)') '  FAIL [drag_model] info=', info
+            call report('drag_model', pass)
+            return
+        end if
+
+        ! Extract drag-only acceleration (subtract Kepler part)
+        drag_ax = x_dot_drag(4) - x_dot_kep(4)
+        drag_ay = x_dot_drag(5) - x_dot_kep(5)
+        drag_az = x_dot_drag(6) - x_dot_kep(6)
+
+        ! Drag should oppose velocity: dot(a_drag, v) < 0
+        dot_product_val = drag_ax * x_drag(4) + drag_ay * x_drag(5) + drag_az * x_drag(6)
+        if (dot_product_val >= 0.0d0) then
+            write(*,'(A,ES14.7)') '  FAIL [drag_model] drag not opposing velocity, dot=', &
+                dot_product_val
+            pass = .false.
+        end if
+
+        ! beta_dot should be zero
+        if (abs(x_dot_drag(7)) > 1.0d-14) then
+            write(*,'(A,ES14.7)') '  FAIL [drag_model] beta_dot not zero: ', x_dot_drag(7)
+            pass = .false.
+        end if
+
+        call report('drag_model', pass)
+    end subroutine test_drag_model
+
+    ! =========================================================================
+    ! Test: Drag Jacobian (finite-difference verification)
+    ! =========================================================================
+    subroutine test_drag_jacobian()
+        real(c_double) :: x(7), params(4)
+        logical :: pass
+
+        x = [6778.0d3, 100.0d3, 50.0d3, -200.0d0, 7669.0d0, 100.0d0, 0.01d0]
+        params = [3.986004418d14, 1.225d0, 8500.0d0, 6371.0d3]
+
+        call verify_jacobian_params('drag_jacobian', 4, 7, x, params, 4, 1.0d-4, pass)
+        call report('drag_jacobian', pass)
+    end subroutine test_drag_jacobian
+
+    ! =========================================================================
+    ! Test: Orbital edge cases
+    ! n!=6 for Kepler -> info=3, np<1 for Kepler -> info=3
+    ! =========================================================================
+    subroutine test_orbital_edge_cases()
+        real(c_double) :: x4(4), x_dot4(4), x6(6), x_dot6(6)
+        real(c_double) :: dummy_u(1), dummy_p(1)
+        real(c_double) :: empty_p(1)
+        integer(c_int) :: info
+        logical :: pass
+
+        dummy_u(1) = 0.0d0
+        dummy_p(1) = 3.986004418d14
+
+        pass = .true.
+
+        ! Kepler with n=4 (wrong state dimension) -> info=3
+        x4 = [1.0d0, 2.0d0, 3.0d0, 4.0d0]
+        call fa_dynamics_dispatch(1, 4, x4, dummy_u, 1, 0.0d0, dummy_p, 1, x_dot4, info)
+        if (info /= 3) then
+            write(*,'(A,I0)') '  FAIL [orbital_edge_cases] Kepler n=4 expected info=3, got ', info
+            pass = .false.
+        end if
+
+        ! Kepler with np=0 -> info=3
+        ! We pass np=0 with a dummy array; the subroutine checks np<1
+        empty_p(1) = 0.0d0
+        x6 = [6778.0d3, 0.0d0, 0.0d0, 0.0d0, 7669.0d0, 0.0d0]
+        call fa_dynamics_dispatch(1, 6, x6, dummy_u, 1, 0.0d0, empty_p, 0, x_dot6, info)
+        if (info /= 3) then
+            write(*,'(A,I0)') '  FAIL [orbital_edge_cases] Kepler np=0 expected info=3, got ', info
+            pass = .false.
+        end if
+
+        call report('orbital_edge_cases', pass)
+    end subroutine test_orbital_edge_cases
 
 end program test_dynamics
