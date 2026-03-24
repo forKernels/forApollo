@@ -1,4 +1,5 @@
 .{
+    .fingerprint = 0xb7fb2ed6e23dd3a7,
     .name = .forapollo,
     .version = "0.1.0",
     .minimum_zig_version = "0.15.0",

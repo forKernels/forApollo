@@ -1,8 +1,8 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Stage 1: Makefile compiles Fortran → libforapollo_fortran.a
-// Stage 2: This file links Fortran objects + deps → static + shared libraries
+// Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
+// Stage 2: This file links Fortran objects + deps -> static + shared libraries
 //
 // Usage:
 //   zig build                         # standard build
@@ -112,22 +112,31 @@ pub fn build(b: *std.Build) void {
     if (generate_prebuilt) {
         std.debug.print(
             "[forapollo] -Dgenerate-prebuilt=true: after building, copy " ++
-                "build/libforapollo_fortran.a → prebuilt/\n",
+                "build/libforapollo_fortran.a -> prebuilt/\n",
             .{},
         );
     }
 
     // -----------------------------------------------------------------------
-    // Static library: libforapollo.a
+    // Create the root module (shared between static, shared, and test)
     // -----------------------------------------------------------------------
 
-    const static_lib = b.addStaticLibrary(.{
-        .name = "forapollo",
+    const root_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
     });
-    static_lib.root_module.addOptions("build_opts", build_opts);
+    root_module.addOptions("build_opts", build_opts);
+
+    // -----------------------------------------------------------------------
+    // Static library: libforapollo.a
+    // -----------------------------------------------------------------------
+
+    const static_lib = b.addLibrary(.{
+        .linkage = .static,
+        .name = "forapollo",
+        .root_module = root_module,
+    });
     linkDeps(b, static_lib, fortran_archive);
     b.installArtifact(static_lib);
 
@@ -135,14 +144,20 @@ pub fn build(b: *std.Build) void {
     // Shared library: libforapollo.so / .dylib  (Python ctypes target)
     // -----------------------------------------------------------------------
 
-    const shared_lib = b.addSharedLibrary(.{
-        .name = "forapollo",
+    // Shared lib needs its own module instance since linkage differs
+    const shared_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    shared_module.addOptions("build_opts", build_opts);
+
+    const shared_lib = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "forapollo",
+        .root_module = shared_module,
         .version = .{ .major = 0, .minor = 1, .patch = 0 },
     });
-    shared_lib.root_module.addOptions("build_opts", build_opts);
     linkDeps(b, shared_lib, fortran_archive);
     b.installArtifact(shared_lib);
 
@@ -150,12 +165,16 @@ pub fn build(b: *std.Build) void {
     // Test step
     // -----------------------------------------------------------------------
 
-    const unit_tests = b.addTest(.{
+    const test_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
     });
-    unit_tests.root_module.addOptions("build_opts", build_opts);
+    test_module.addOptions("build_opts", build_opts);
+
+    const unit_tests = b.addTest(.{
+        .root_module = test_module,
+    });
     linkDeps(b, unit_tests, fortran_archive);
 
     const run_tests = b.addRunArtifact(unit_tests);

@@ -1,36 +1,18 @@
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// exports.zig — C ABI exports for Python/Rust/C++ consumers
+// fortran.zig — extern fn declarations for all fa_* Fortran bind(C) symbols
+// These are resolved at link time against libforapollo_fortran.a
 //
-// All functions prefixed forapollo_* and call fa_* Fortran kernels through
-// the safety + dispatch layers. This is the public API of libforapollo.
-//
-// Flow: caller → forapollo_* (validate) → dispatch → fortran fa_*
-
-const safety = @import("safety.zig");
-const fortran = @import("fortran.zig");
-const dispatch = @import("dispatch.zig");
-
-// Force the compiler to pull in all referenced modules so link errors
-// surface at build time rather than at dlopen time.
-comptime {
-    _ = @import("kernels.zig");
-}
+// Convention:
+//   Fortran `value` attribute → pass-by-value (i32, f64)
+//   Fortran without `value`  → pass-by-pointer ([*]f64, *i32, [*]i32)
+//   Fortran `type(c_funptr), value` → ?*const anyopaque
 
 // ============================================================================
-// Version
+// Dynamics (forapollo_dynamics.f90)
 // ============================================================================
 
-/// Returns the library version as a packed u32: 0xMMmmpp (major.minor.patch).
-pub export fn forapollo_version() callconv(.c) u32 {
-    return 0x000100; // 0.1.0
-}
-
-// ============================================================================
-// Dynamics
-// ============================================================================
-
-pub export fn forapollo_dynamics_dispatch(
+pub extern "c" fn fa_dynamics_dispatch(
     model_id: i32,
     n: i32,
     x: [*]const f64,
@@ -41,15 +23,9 @@ pub export fn forapollo_dynamics_dispatch(
     np: i32,
     x_dot: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.dynamicsDispatch(model_id, n, x, u, nu, t, params, np, x_dot, info);
-}
+) void;
 
-pub export fn forapollo_dynamics_jacobian(
+pub extern "c" fn fa_dynamics_jacobian(
     model_id: i32,
     n: i32,
     x: [*]const f64,
@@ -60,19 +36,13 @@ pub export fn forapollo_dynamics_jacobian(
     np: i32,
     F: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.dynamicsJacobian(model_id, n, x, u, nu, t, params, np, F, info);
-}
+) void;
 
 // ============================================================================
-// Observation
+// Observation (forapollo_observe.f90)
 // ============================================================================
 
-pub export fn forapollo_observe_dispatch(
+pub extern "c" fn fa_observe_dispatch(
     obs_id: i32,
     n: i32,
     x: [*]const f64,
@@ -82,15 +52,9 @@ pub export fn forapollo_observe_dispatch(
     nop: i32,
     z_pred: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.observeDispatch(obs_id, n, x, m, t, obs_params, nop, z_pred, info);
-}
+) void;
 
-pub export fn forapollo_observe_jacobian(
+pub extern "c" fn fa_observe_jacobian(
     obs_id: i32,
     n: i32,
     x: [*]const f64,
@@ -100,19 +64,13 @@ pub export fn forapollo_observe_jacobian(
     nop: i32,
     H: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.observeJacobian(obs_id, n, x, m, t, obs_params, nop, H, info);
-}
+) void;
 
 // ============================================================================
-// Propagation
+// Propagation (forapollo_propagate.f90)
 // ============================================================================
 
-pub export fn forapollo_propagate(
+pub extern "c" fn fa_propagate(
     n: i32,
     x: [*]f64,
     u: [*]const f64,
@@ -124,15 +82,9 @@ pub export fn forapollo_propagate(
     dt: f64,
     n_steps: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.propagate(n, x, u, nu, f_ptr, model_id, params, np, dt, n_steps, info);
-}
+) void;
 
-pub export fn forapollo_propagate_stm(
+pub extern "c" fn fa_propagate_stm(
     n: i32,
     x: [*]f64,
     phi: [*]f64,
@@ -146,15 +98,9 @@ pub export fn forapollo_propagate_stm(
     dt: f64,
     n_steps: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.propagateStm(n, x, phi, u, nu, f_ptr, df_ptr, model_id, params, np, dt, n_steps, info);
-}
+) void;
 
-pub export fn forapollo_propagate_batch(
+pub extern "c" fn fa_propagate_batch(
     n: i32,
     n_states: i32,
     x_batch: [*]f64,
@@ -167,38 +113,22 @@ pub export fn forapollo_propagate_batch(
     dt: f64,
     n_steps: i32,
     info_batch: [*]i32,
-) callconv(.c) void {
-    if (n <= 0 or n_states <= 0) {
-        // Set all info codes to invalid input
-        var i: i32 = 0;
-        while (i < n_states) : (i += 1) {
-            info_batch[@intCast(i)] = 3;
-        }
-        return;
-    }
-    dispatch.propagateBatch(n, n_states, x_batch, u, nu, f_ptr, model_id, params, np, dt, n_steps, info_batch);
-}
+) void;
 
 // ============================================================================
-// Kalman Filter
+// Kalman Filter (forapollo_estimate.f90)
 // ============================================================================
 
-pub export fn forapollo_kf_predict(
+pub extern "c" fn fa_kf_predict(
     n: i32,
     x: [*]f64,
     P: [*]f64,
     F: [*]const f64,
     Q: [*]const f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.kfPredict(n, x, P, F, Q, info);
-}
+) void;
 
-pub export fn forapollo_kf_update(
+pub extern "c" fn fa_kf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -208,19 +138,13 @@ pub export fn forapollo_kf_update(
     R: [*]const f64,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.kfUpdate(n, m, x, P, z, H, R, validity, info);
-}
+) void;
 
 // ============================================================================
 // Extended Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_ekf_predict(
+pub extern "c" fn fa_ekf_predict(
     n: i32,
     x: [*]f64,
     P: [*]f64,
@@ -233,15 +157,9 @@ pub export fn forapollo_ekf_predict(
     np: i32,
     n_steps: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.ekfPredict(n, x, P, f_ptr, df_ptr, Q, dt, model_id, params, np, n_steps, info);
-}
+) void;
 
-pub export fn forapollo_ekf_update(
+pub extern "c" fn fa_ekf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -255,19 +173,13 @@ pub export fn forapollo_ekf_update(
     nop: i32,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.ekfUpdate(n, m, x, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info);
-}
+) void;
 
 // ============================================================================
 // Iterated Extended Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_iekf_update(
+pub extern "c" fn fa_iekf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -283,19 +195,13 @@ pub export fn forapollo_iekf_update(
     tol: f64,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.iekfUpdate(n, m, x, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, max_iter, tol, validity, info);
-}
+) void;
 
 // ============================================================================
 // Unscented Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_ukf_predict(
+pub extern "c" fn fa_ukf_predict(
     n: i32,
     x: [*]f64,
     P: [*]f64,
@@ -309,15 +215,9 @@ pub export fn forapollo_ukf_predict(
     beta_ukf: f64,
     kappa: f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.ukfPredict(n, x, P, f_ptr, model_id, params, np, Q, dt, alpha, beta_ukf, kappa, info);
-}
+) void;
 
-pub export fn forapollo_ukf_update(
+pub extern "c" fn fa_ukf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -333,19 +233,13 @@ pub export fn forapollo_ukf_update(
     kappa: f64,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.ukfUpdate(n, m, x, P, z, h_ptr, obs_id, R, obs_params, nop, alpha, beta_ukf, kappa, validity, info);
-}
+) void;
 
 // ============================================================================
 // Error-State Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_eskf_predict(
+pub extern "c" fn fa_eskf_predict(
     n: i32,
     x_nom: [*]f64,
     dx: [*]f64,
@@ -358,15 +252,9 @@ pub export fn forapollo_eskf_predict(
     dt: f64,
     n_steps: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.eskfPredict(n, x_nom, dx, P, f_ptr, model_id, params, np, Q, dt, n_steps, info);
-}
+) void;
 
-pub export fn forapollo_eskf_update(
+pub extern "c" fn fa_eskf_update(
     n: i32,
     m: i32,
     x_nom: [*]const f64,
@@ -381,33 +269,21 @@ pub export fn forapollo_eskf_update(
     nop: i32,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.eskfUpdate(n, m, x_nom, dx, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info);
-}
+) void;
 
-pub export fn forapollo_eskf_inject(
+pub extern "c" fn fa_eskf_inject(
     n: i32,
     x_nom: [*]f64,
     dx: [*]f64,
     P: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.eskfInject(n, x_nom, dx, P, info);
-}
+) void;
 
 // ============================================================================
 // Square-Root Extended Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_srekf_predict(
+pub extern "c" fn fa_srekf_predict(
     n: i32,
     x: [*]f64,
     S: [*]f64,
@@ -420,15 +296,9 @@ pub export fn forapollo_srekf_predict(
     dt: f64,
     n_steps: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.srekfPredict(n, x, S, f_ptr, df_ptr, model_id, params, np, Sq, dt, n_steps, info);
-}
+) void;
 
-pub export fn forapollo_srekf_update(
+pub extern "c" fn fa_srekf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -442,19 +312,13 @@ pub export fn forapollo_srekf_update(
     nop: i32,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.srekfUpdate(n, m, x, S, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info);
-}
+) void;
 
 // ============================================================================
 // Square-Root Unscented Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_srukf_predict(
+pub extern "c" fn fa_srukf_predict(
     n: i32,
     x: [*]f64,
     S: [*]f64,
@@ -468,15 +332,9 @@ pub export fn forapollo_srukf_predict(
     beta_ukf: f64,
     kappa: f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.srukfPredict(n, x, S, f_ptr, model_id, params, np, Sq, dt, alpha, beta_ukf, kappa, info);
-}
+) void;
 
-pub export fn forapollo_srukf_update(
+pub extern "c" fn fa_srukf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -492,34 +350,22 @@ pub export fn forapollo_srukf_update(
     kappa: f64,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.srukfUpdate(n, m, x, S, z, h_ptr, obs_id, R, obs_params, nop, alpha, beta_ukf, kappa, validity, info);
-}
+) void;
 
 // ============================================================================
 // Information Filter
 // ============================================================================
 
-pub export fn forapollo_if_predict(
+pub extern "c" fn fa_if_predict(
     n: i32,
     eta: [*]f64,
     Ymat: [*]f64,
     F: [*]const f64,
     Q: [*]const f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.ifPredict(n, eta, Ymat, F, Q, info);
-}
+) void;
 
-pub export fn forapollo_if_update(
+pub extern "c" fn fa_if_update(
     n: i32,
     m: i32,
     eta: [*]f64,
@@ -529,19 +375,13 @@ pub export fn forapollo_if_update(
     R: [*]const f64,
     validity: [*]i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.ifUpdate(n, m, eta, Ymat, z, H, R, validity, info);
-}
+) void;
 
 // ============================================================================
 // Particle Filter (SIR)
 // ============================================================================
 
-pub export fn forapollo_pf_sir_predict(
+pub extern "c" fn fa_pf_sir_predict(
     n: i32,
     n_particles: i32,
     particles: [*]f64,
@@ -555,15 +395,9 @@ pub export fn forapollo_pf_sir_predict(
     n_steps: i32,
     seed: *i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or n_particles <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.pfSirPredict(n, n_particles, particles, weights, f_ptr, model_id, params, np, Q, dt, n_steps, seed, info);
-}
+) void;
 
-pub export fn forapollo_pf_sir_update(
+pub extern "c" fn fa_pf_sir_update(
     n: i32,
     m: i32,
     n_particles: i32,
@@ -576,30 +410,18 @@ pub export fn forapollo_pf_sir_update(
     obs_params: [*]const f64,
     nop: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0 or n_particles <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.pfSirUpdate(n, m, n_particles, particles, weights, z, h_ptr, obs_id, R, obs_params, nop, info);
-}
+) void;
 
-pub export fn forapollo_pf_sir_resample(
+pub extern "c" fn fa_pf_sir_resample(
     n: i32,
     n_particles: i32,
     particles: [*]f64,
     weights: [*]f64,
     seed: *i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or n_particles <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.pfSirResample(n, n_particles, particles, weights, seed, info);
-}
+) void;
 
-pub export fn forapollo_pf_rb_update(
+pub extern "c" fn fa_pf_rb_update(
     n: i32,
     m: i32,
     n_particles: i32,
@@ -613,19 +435,13 @@ pub export fn forapollo_pf_rb_update(
     obs_params: [*]const f64,
     nop: i32,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m <= 0 or n_particles <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.pfRbUpdate(n, m, n_particles, n_linear, particles, weights, z, h_ptr, obs_id, R, obs_params, nop, info);
-}
+) void;
 
 // ============================================================================
 // Smoothers
 // ============================================================================
 
-pub export fn forapollo_rts_smooth(
+pub extern "c" fn fa_rts_smooth(
     n: i32,
     nsteps: i32,
     x_filt: [*]const f64,
@@ -636,15 +452,9 @@ pub export fn forapollo_rts_smooth(
     x_smooth: [*]f64,
     P_smooth: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or nsteps <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.rtsSmooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, x_smooth, P_smooth, info);
-}
+) void;
 
-pub export fn forapollo_urtss_smooth(
+pub extern "c" fn fa_urtss_smooth(
     n: i32,
     nsteps: i32,
     x_filt: [*]const f64,
@@ -655,19 +465,13 @@ pub export fn forapollo_urtss_smooth(
     x_smooth: [*]f64,
     P_smooth: [*]f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or nsteps <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.urtssSmooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, x_smooth, P_smooth, info);
-}
+) void;
 
 // ============================================================================
 // Batch Estimators
 // ============================================================================
 
-pub export fn forapollo_batch_wls(
+pub extern "c" fn fa_batch_wls(
     n: i32,
     m_total: i32,
     x: [*]f64,
@@ -677,15 +481,9 @@ pub export fn forapollo_batch_wls(
     max_iter: i32,
     tol: f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m_total <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.batchWls(n, m_total, x, z_all, H_all, R_all, max_iter, tol, info);
-}
+) void;
 
-pub export fn forapollo_batch_map(
+pub extern "c" fn fa_batch_map(
     n: i32,
     m_total: i32,
     x: [*]f64,
@@ -697,10 +495,4 @@ pub export fn forapollo_batch_map(
     max_iter: i32,
     tol: f64,
     info: *i32,
-) callconv(.c) void {
-    if (n <= 0 or m_total <= 0) {
-        info.* = 3;
-        return;
-    }
-    dispatch.batchMap(n, m_total, x, x0, P0, z_all, H_all, R_all, max_iter, tol, info);
-}
+) void;
