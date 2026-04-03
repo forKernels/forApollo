@@ -12,55 +12,114 @@
 
 const std = @import("std");
 
+fn getTargetName(t: std.Target) []const u8 {
+    return switch (t.os.tag) {
+        .macos => switch (t.cpu.arch) {
+            .aarch64 => "macos-arm64",
+            else => "macos-unknown",
+        },
+        .linux => switch (t.cpu.arch) {
+            .aarch64 => "linux-arm64",
+            .x86_64 => "linux-x86_64",
+            else => "linux-unknown",
+        },
+        else => "unknown",
+    };
+}
+
 // ---------------------------------------------------------------------------
-// Dependency archive lists
+// Dependency library names (linked by name, resolved via search paths)
 // ---------------------------------------------------------------------------
 
-/// All formath component archives (order matters for static linking)
-const formath_archives = [_][]const u8{
-    "deps/formath/lib/libformath_linalg.a",
-    "deps/formath/lib/libformath_ode.a",
-    "deps/formath/lib/libformath_quaternion.a",
-    "deps/formath/lib/libformath_liegroups.a",
-    "deps/formath/lib/libformath_optimize.a",
-    "deps/formath/lib/libformath_special.a",
-    "deps/formath/lib/libformath_random.a",
-    "deps/formath/lib/libformath_numdiff.a",
-    "deps/formath/lib/libformath_fft.a",
+/// forMath component libraries needed by forApollo
+const formath_libs = [_][]const u8{
+    "formath_linalg",
+    "formath_ode",
+    "formath_quaternion",
+    "formath_liegroups",
+    "formath_optimize",
+    "formath_special",
+    "formath_random",
+    "formath_numdiff",
+    "formath_fft",
 };
 
-/// Single-archive upstream dependencies
-const upstream_archives = [_][]const u8{
-    "deps/forfft/lib/libforfft.a",
-    "deps/foropt/lib/libforopt.a",
-    "deps/forternary/lib/libforternary.a",
-    "deps/forgraph/lib/libforgraph.a",
+/// Other upstream dependency libraries
+const upstream_libs = [_][]const u8{
+    "forfft",
+    "foropt",
+    "forternary",
+    "forgraph",
+    "fortime",
 };
 
 // ---------------------------------------------------------------------------
-// Helper: link all dependency archives + system libs onto a compile step
+// Helper: link all dependencies onto a compile step
 // ---------------------------------------------------------------------------
 
-/// linkDeps attaches every Fortran archive and required system library to
-/// `step`. Call this for both the static library, the shared library, and
-/// the test runner so the logic lives in exactly one place.
-fn linkDeps(b: *std.Build, step: *std.Build.Step.Compile, fortran_obj: []const u8) void {
+fn linkDeps(
+    b: *std.Build,
+    step: *std.Build.Step.Compile,
+    fortran_obj: []const u8,
+    target_name: []const u8,
+) void {
     // Fortran kernel archive (stage-1 output)
     step.addObjectFile(b.path(fortran_obj));
 
-    // formath component archives
-    for (formath_archives) |archive| {
-        step.addObjectFile(b.path(archive));
+    // Dependency resolution order:
+    //   1. deps/*/lib/                            (checked-in archives, default)
+    //   2. ../sibling/prebuilt/{target}/lib/       (dev: sibling prebuilts)
+    //   3. ../sibling/zig-out/{target}/lib/        (dev: sibling build output)
+    //   4. ../sibling/prebuilt/lib/                (dev: legacy flat fallback)
+    //   5. ../sibling/zig-out/lib/                 (dev: legacy flat fallback)
+    inline for (.{
+        .{ "formath", "../forMath" },
+        .{ "forfft", "../forFFT/zig" },
+        .{ "foropt", "../forOpt" },
+        .{ "forternary", "../forTernary" },
+        .{ "forgraph", "../forGraph" },
+        .{ "fortime", "../forTime" },
+    }) |dep| {
+        const pkg = dep[0];
+        const sibling = dep[1];
+        // Local deps/ directory (default path)
+        step.addLibraryPath(.{ .cwd_relative = "deps/" ++ pkg ++ "/lib" });
+        // Sibling resolution (dev builds)
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
+        step.addLibraryPath(.{ .cwd_relative = sibling ++ "/prebuilt/lib" });
+        step.addLibraryPath(.{ .cwd_relative = sibling ++ "/zig-out/lib" });
     }
 
-    // Other upstream archives
-    for (upstream_archives) |archive| {
-        step.addObjectFile(b.path(archive));
+    // Link forMath component libraries
+    for (formath_libs) |lib_name| {
+        step.linkSystemLibrary(lib_name);
+    }
+
+    // Link other upstream libraries
+    for (upstream_libs) |lib_name| {
+        step.linkSystemLibrary(lib_name);
     }
 
     // System runtime libraries
-    step.linkSystemLibrary("gfortran"); // Fortran runtime
-    step.linkSystemLibrary("gomp"); // OpenMP runtime
+    const is_macos = step.rootModuleTarget().os.tag == .macos;
+    const is_linux = step.rootModuleTarget().os.tag == .linux;
+    if (is_macos) {
+        step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
+        step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
+    } else if (is_linux) {
+        // Per-target dep + syslib paths
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("deps/{s}", .{target_name}) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("deps/syslibs/{s}", .{target_name}) });
+        // Native system paths (when building on Linux)
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/11" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/11" });
+    }
+    step.linkSystemLibrary("gfortran");
+    step.linkSystemLibrary("gomp");
     step.linkLibC();
 }
 
@@ -71,6 +130,7 @@ fn linkDeps(b: *std.Build, step: *std.Build.Step.Compile, fortran_obj: []const u
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const target_name = getTargetName(target.result);
 
     // -----------------------------------------------------------------------
     // Build options
@@ -100,20 +160,19 @@ pub fn build(b: *std.Build) void {
     build_opts.addOption(bool, "use_prebuilt", use_prebuilt);
 
     // -----------------------------------------------------------------------
-    // Resolve Fortran archive path
+    // Resolve Fortran archive path (per-target)
     // -----------------------------------------------------------------------
 
     const fortran_archive: []const u8 = if (use_prebuilt)
-        "prebuilt/libforapollo_fortran.a"
+        b.fmt("prebuilt/{s}/lib/libforapollo_fortran.a", .{target_name})
     else
-        "build/libforapollo_fortran.a";
+        b.fmt("build/{s}/lib/libforapollo_fortran.a", .{target_name});
 
-    // Optionally emit a warning so the developer notices the prebuilt flag
     if (generate_prebuilt) {
         std.debug.print(
             "[forapollo] -Dgenerate-prebuilt=true: after building, copy " ++
-                "build/libforapollo_fortran.a -> prebuilt/\n",
-            .{},
+                "build/{s}/lib/libforapollo_fortran.a -> prebuilt/{s}/lib/\n",
+            .{ target_name, target_name },
         );
     }
 
@@ -137,14 +196,18 @@ pub fn build(b: *std.Build) void {
         .name = "forapollo",
         .root_module = root_module,
     });
-    linkDeps(b, static_lib, fortran_archive);
-    b.installArtifact(static_lib);
+    linkDeps(b, static_lib, fortran_archive, target_name);
+    {
+        const install = b.addInstallArtifact(static_lib, .{
+            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
+        });
+        b.getInstallStep().dependOn(&install.step);
+    }
 
     // -----------------------------------------------------------------------
     // Shared library: libforapollo.so / .dylib  (Python ctypes target)
     // -----------------------------------------------------------------------
 
-    // Shared lib needs its own module instance since linkage differs
     const shared_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
@@ -158,8 +221,13 @@ pub fn build(b: *std.Build) void {
         .root_module = shared_module,
         .version = .{ .major = 0, .minor = 1, .patch = 0 },
     });
-    linkDeps(b, shared_lib, fortran_archive);
-    b.installArtifact(shared_lib);
+    linkDeps(b, shared_lib, fortran_archive, target_name);
+    {
+        const install = b.addInstallArtifact(shared_lib, .{
+            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
+        });
+        b.getInstallStep().dependOn(&install.step);
+    }
 
     // -----------------------------------------------------------------------
     // Test step
@@ -175,7 +243,7 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_module,
     });
-    linkDeps(b, unit_tests, fortran_archive);
+    linkDeps(b, unit_tests, fortran_archive, target_name);
 
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run Zig unit tests");

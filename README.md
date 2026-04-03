@@ -225,8 +225,7 @@ zig build -Ddev=true               # source-build deps (development only)
 ### Cross-compilation
 
 ```bash
-zig build -Dtarget=aarch64-linux-gnu   # Jetson Orin / Raspberry Pi
-zig build -Dtarget=x86_64-linux-gnu    # Cloud / server
+zig build -Dtarget=aarch64-linux-gnu   # Jetson Orin / Raspberry Pi / Cloud
 zig build                              # macOS (development)
 ```
 

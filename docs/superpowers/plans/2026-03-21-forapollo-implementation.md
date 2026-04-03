@@ -126,7 +126,7 @@ README.md        — already updated (done during brainstorming)
 - Create: `deps/foropt/lib/` `deps/foropt/zig/` (directories)
 - Create: `deps/forternary/lib/` `deps/forternary/zig/` (directories)
 - Create: `deps/forgraph/lib/` `deps/forgraph/zig/` (directories)
-- Create: `prebuilt/aarch64-linux-gnu/` `prebuilt/x86_64-linux-gnu/` `prebuilt/aarch64-apple-darwin/` (directories)
+- Create: `prebuilt/aarch64-linux-gnu/` `prebuilt/aarch64-apple-darwin/` (directories)
 
 - [ ] **Step 1: Create all directories**
 
@@ -134,7 +134,7 @@ README.md        — already updated (done during brainstorming)
 mkdir -p src/fortran src/zig tests/fortran tests/python python/forapollo
 mkdir -p deps/formath/{lib,zig} deps/forfft/{lib,zig} deps/foropt/{lib,zig}
 mkdir -p deps/forternary/{lib,zig} deps/forgraph/{lib,zig}
-mkdir -p prebuilt/{aarch64-linux-gnu,x86_64-linux-gnu,aarch64-apple-darwin}
+mkdir -p prebuilt/{aarch64-linux-gnu,aarch64-apple-darwin}
 ```
 
 - [ ] **Step 2: Verify structure**
@@ -154,7 +154,6 @@ touch deps/foropt/lib/.gitkeep deps/foropt/zig/.gitkeep
 touch deps/forternary/lib/.gitkeep deps/forternary/zig/.gitkeep
 touch deps/forgraph/lib/.gitkeep deps/forgraph/zig/.gitkeep
 touch prebuilt/aarch64-linux-gnu/.gitkeep
-touch prebuilt/x86_64-linux-gnu/.gitkeep
 touch prebuilt/aarch64-apple-darwin/.gitkeep
 ```
 
@@ -213,10 +212,8 @@ UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
     PLATFORM = aarch64-apple-darwin
-else ifeq ($(UNAME_M),aarch64)
-    PLATFORM = aarch64-linux-gnu
 else
-    PLATFORM = x86_64-linux-gnu
+    PLATFORM = aarch64-linux-gnu
 endif
 
 .PHONY: all clean prebuilt

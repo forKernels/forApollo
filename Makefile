@@ -33,26 +33,29 @@ TEST_DIR  := tests/fortran
 
 # --- Platform detection for prebuilt target -----------------------------------
 #
-# Darwin (macOS) with Apple Silicon → aarch64-apple-darwin
-# Linux aarch64 (Jetson, RPi)       → aarch64-linux-gnu
-# Anything else                     → x86_64-linux-gnu
+# Darwin (macOS) with Apple Silicon → macos-arm64
+# Linux aarch64 (Jetson, RPi)      → linux-arm64
+# Linux x86_64 (cloud, CI)         → linux-x86_64
 #
 UNAME_S  := $(shell uname -s)
 UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
-    PLATFORM := aarch64-apple-darwin
-else ifeq ($(UNAME_M),aarch64)
-    PLATFORM := aarch64-linux-gnu
+    PLATFORM := macos-arm64
+else ifeq ($(UNAME_M),x86_64)
+    PLATFORM := linux-x86_64
 else
-    PLATFORM := x86_64-linux-gnu
+    PLATFORM := linux-arm64
 endif
 
 PREBUILT_DIR := prebuilt/$(PLATFORM)
 
 # --- Output archive -----------------------------------------------------------
-
-LIB := $(BUILD_DIR)/libforapollo_fortran.a
+#
+# Archive goes into build/{platform}/lib/ to match Zig build.zig resolution.
+#
+PLAT_LIB_DIR := $(BUILD_DIR)/$(PLATFORM)/lib
+LIB          := $(PLAT_LIB_DIR)/libforapollo_fortran.a
 
 # --- Source compilation order -------------------------------------------------
 #
@@ -95,9 +98,12 @@ all: lib
 
 lib: $(LIB)
 
-$(LIB): $(OBJS)
+$(LIB): $(OBJS) | $(PLAT_LIB_DIR)
 	@echo "[AR] $@"
 	ar rcs $@ $^
+
+$(PLAT_LIB_DIR):
+	mkdir -p $(PLAT_LIB_DIR)
 
 # Pattern rule: compile each .f90 → .o
 # Modules (.mod) are emitted into OBJ_DIR so they are found by dependent units.
@@ -118,10 +124,10 @@ $(BUILD_DIR):
 # Destination directory must already exist (created as part of repo layout).
 
 prebuilt: $(LIB)
-	@echo "[PREBUILT] copying to $(PREBUILT_DIR)/"
-	@mkdir -p $(PREBUILT_DIR)
-	cp $(LIB) $(PREBUILT_DIR)/libforapollo_fortran.a
-	@echo "[PREBUILT] done — $(PREBUILT_DIR)/libforapollo_fortran.a"
+	@echo "[PREBUILT] copying to $(PREBUILT_DIR)/lib/"
+	@mkdir -p $(PREBUILT_DIR)/lib
+	cp $(LIB) $(PREBUILT_DIR)/lib/libforapollo_fortran.a
+	@echo "[PREBUILT] done — $(PREBUILT_DIR)/lib/libforapollo_fortran.a"
 
 # --- test: compile and run Fortran unit tests --------------------------------
 #

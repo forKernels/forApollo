@@ -139,8 +139,7 @@ Multi-platform prebuilts of forApollo itself:
 
 ```
 prebuilt/
-├── aarch64-linux-gnu/libforapollo.a      ← Jetson / RPi
-├── x86_64-linux-gnu/libforapollo.a       ← Cloud / server
+├── aarch64-linux-gnu/libforapollo.a      ← Jetson / RPi / Cloud
 └── aarch64-apple-darwin/libforapollo.a   ← Mac development
 ```
 

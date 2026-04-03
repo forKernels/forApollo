@@ -580,3 +580,118 @@ pub fn batchMap(
 ) void {
     fortran.fa_batch_map(n, m_total, x, x0, P0, z_all, H_all, R_all, max_iter, tol, info);
 }
+
+// ============================================================================
+// Guidance dispatch — all forward to Fortran
+// ============================================================================
+
+pub fn guidanceZem(n: i32, x: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_zem(n, x, t_go, g, a_cmd, info);
+}
+pub fn guidanceZev(n: i32, x: [*]const f64, v_target: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_zev(n, x, v_target, t_go, g, a_cmd, info);
+}
+pub fn guidanceEguidance(n: i32, x: [*]const f64, x_target: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_eguidance(n, x, x_target, t_go, g, a_cmd, info);
+}
+pub fn guidancePnPure(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_pn_pure(n, x_p, x_t, N_gain, a_cmd, info);
+}
+pub fn guidancePnAug(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_target: [*]const f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_pn_aug(n, x_p, x_t, N_gain, a_target, a_cmd, info);
+}
+pub fn guidancePnTrue(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_pn_true(n, x_p, x_t, N_gain, a_cmd, info);
+}
+pub fn guidanceLambert(r1: [*]const f64, r2: [*]const f64, tof: f64, mu: f64, v1: [*]f64, v2: [*]f64, n_rev: i32, info: *i32) void {
+    fortran.fa_guidance_lambert(r1, r2, tof, mu, v1, v2, n_rev, info);
+}
+pub fn guidanceLqr(n: i32, m: i32, A: [*]const f64, B: [*]const f64, Q_cost: [*]const f64, R_cost: [*]const f64, x: [*]const f64, u_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_lqr(n, m, A, B, Q_cost, R_cost, x, u_cmd, info);
+}
+pub fn guidancePurePursuit(x_pos: [*]const f64, x_lookahead: [*]const f64, L_wheelbase: f64, steer_cmd: *f64, info: *i32) void {
+    fortran.fa_guidance_pure_pursuit(x_pos, x_lookahead, L_wheelbase, steer_cmd, info);
+}
+pub fn guidanceStanley(x_pos: [*]const f64, path_point: [*]const f64, path_heading: f64, v: f64, k_gain: f64, steer_cmd: *f64, info: *i32) void {
+    fortran.fa_guidance_stanley(x_pos, path_point, path_heading, v, k_gain, steer_cmd, info);
+}
+pub fn guidanceTrajTrack(n: i32, x: [*]const f64, x_ref: [*]const f64, v_ref: [*]const f64, K_pos: f64, K_vel: f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_traj_track(n, x, x_ref, v_ref, K_pos, K_vel, a_cmd, info);
+}
+pub fn guidanceMinEnergy(n: i32, x: [*]const f64, x_target: [*]const f64, t_go: f64, a_cmd: [*]f64, info: *i32) void {
+    fortran.fa_guidance_min_energy(n, x, x_target, t_go, a_cmd, info);
+}
+
+// ============================================================================
+// Coordinates dispatch — all forward to Fortran
+// ============================================================================
+
+pub fn coordsTransform(from_id: i32, to_id: i32, n: i32, x_in: [*]const f64, x_out: [*]f64, t: f64, params: [*]const f64, np: i32, info: *i32) void {
+    fortran.fa_coords_transform(from_id, to_id, n, x_in, x_out, t, params, np, info);
+}
+pub fn coordsEciToEcef(x_eci: [*]const f64, x_ecef: [*]f64, gmst: f64, info: *i32) void {
+    fortran.fa_coords_eci_to_ecef(x_eci, x_ecef, gmst, info);
+}
+pub fn coordsEcefToEci(x_ecef: [*]const f64, x_eci: [*]f64, gmst: f64, info: *i32) void {
+    fortran.fa_coords_ecef_to_eci(x_ecef, x_eci, gmst, info);
+}
+pub fn coordsEcefToGeodetic(x_ecef: [*]const f64, lat: *f64, lon: *f64, alt: *f64, a_body: f64, f_body: f64, info: *i32) void {
+    fortran.fa_coords_ecef_to_geodetic(x_ecef, lat, lon, alt, a_body, f_body, info);
+}
+pub fn coordsGeodeticToEcef(lat: f64, lon: f64, alt: f64, x_ecef: [*]f64, a_body: f64, f_body: f64, info: *i32) void {
+    fortran.fa_coords_geodetic_to_ecef(lat, lon, alt, x_ecef, a_body, f_body, info);
+}
+pub fn coordsCartToKeplerian(rv: [*]const f64, mu: f64, oe: [*]f64, info: *i32) void {
+    fortran.fa_coords_cart_to_keplerian(rv, mu, oe, info);
+}
+pub fn coordsKeplerianToCart(oe: [*]const f64, mu: f64, rv: [*]f64, info: *i32) void {
+    fortran.fa_coords_keplerian_to_cart(oe, mu, rv, info);
+}
+
+// ============================================================================
+// Astrodynamics dispatch — all forward to Fortran
+// ============================================================================
+
+pub fn astroKeplerSolve(mean_anom: f64, ecc: f64, ecc_anom: *f64, info: *i32) void {
+    fortran.fa_astro_kepler_solve(mean_anom, ecc, ecc_anom, info);
+}
+pub fn astroVisViva(r: f64, a: f64, mu: f64, v: *f64, info: *i32) void {
+    fortran.fa_astro_vis_viva(r, a, mu, v, info);
+}
+pub fn astroPeriod(a: f64, mu: f64, T: *f64, info: *i32) void {
+    fortran.fa_astro_period(a, mu, T, info);
+}
+pub fn astroHohmann(r1: f64, r2: f64, mu: f64, dv1: *f64, dv2: *f64, tof: *f64, info: *i32) void {
+    fortran.fa_astro_hohmann(r1, r2, mu, dv1, dv2, tof, info);
+}
+pub fn astroPlanetaryMu(body_id: i32, mu: *f64, info: *i32) void {
+    fortran.fa_astro_planetary_mu(body_id, mu, info);
+}
+
+// ============================================================================
+// Environment dispatch — all forward to Fortran
+// ============================================================================
+
+pub fn environAtmosphereUs76(h: f64, rho: *f64, T_atm: *f64, p_atm: *f64, info: *i32) void {
+    fortran.fa_environ_atmosphere_us76(h, rho, T_atm, p_atm, info);
+}
+pub fn environGravityJ2(r_vec: [*]const f64, mu: f64, J2: f64, R_eq: f64, g_vec: [*]f64, info: *i32) void {
+    fortran.fa_environ_gravity_j2(r_vec, mu, J2, R_eq, g_vec, info);
+}
+pub fn environGeodesicVincenty(lat1: f64, lon1: f64, lat2: f64, lon2: f64, a_body: f64, f_body: f64, dist: *f64, az1: *f64, az2: *f64, info: *i32) void {
+    fortran.fa_environ_geodesic_vincenty(lat1, lon1, lat2, lon2, a_body, f_body, dist, az1, az2, info);
+}
+
+// ============================================================================
+// Time dispatch — all forward to Fortran
+// ============================================================================
+
+pub fn timeGmst(ut1_jd: f64, gmst_rad: *f64, info: *i32) void {
+    fortran.fa_time_gmst(ut1_jd, gmst_rad, info);
+}
+pub fn timeCalToJd(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64, jd: *f64, info: *i32) void {
+    fortran.fa_time_cal_to_jd(year, month, day, hour, minute, second, jd, info);
+}
+pub fn timeUtcToTai(utc_jd: f64, tai_jd: *f64, info: *i32) void {
+    fortran.fa_time_utc_to_tai(utc_jd, tai_jd, info);
+}

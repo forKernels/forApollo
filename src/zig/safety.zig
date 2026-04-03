@@ -124,3 +124,25 @@ pub fn validateBatchEstimator(n: i32, m_total: i32, x: ?[*]f64) Error!void {
     if (m_total <= 0) return Error.InvalidDimension;
     try validatePointer(x);
 }
+
+/// Validate guidance arguments: n >= 6 for state-based guidance.
+pub fn validateGuidance(n: i32) Error!void {
+    if (n < 6) return Error.InvalidDimension;
+}
+
+/// Validate time-to-go is positive and nonzero.
+pub fn validateTimeToGo(t_go: f64) Error!void {
+    if (t_go == 0.0 or t_go != t_go) return Error.InvalidInput; // NaN check
+}
+
+/// Validate positive scalar (mu, radius, etc).
+pub fn validatePositiveScalar(val: f64) Error!void {
+    if (val <= 0.0 or val != val) return Error.InvalidInput;
+}
+
+/// Validate coordinate frame ID is in known range.
+pub fn validateFrameId(id: i32) Error!void {
+    // Valid ranges: 1-2 (inertial), 10-12 (rotating), 20-22 (local),
+    // 30-32 (orbital), 40-41 (geodetic), 50-51 (other)
+    if (id <= 0) return Error.InvalidInput;
+}
