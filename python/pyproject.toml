@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forapollo"
+version = "0.1.0"
+description = "Python ctypes bindings for forApollo -- universal state estimation, navigation, and guidance"
+requires-python = ">=3.10"
+license = {text = "Proprietary"}
+authors = [{name = "David Clabaugh", email = "david@thefantasticplanet.com"}]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["forapollo*"]
