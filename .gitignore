@@ -59,3 +59,7 @@ venv/
 
 # debug information files
 *.dwo
+
+# Prebuilt archives — built from source per target
+prebuilt/
+zig-out/
