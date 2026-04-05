@@ -10,6 +10,7 @@
 const safety = @import("safety.zig");
 const fortran = @import("fortran.zig");
 const dispatch = @import("dispatch.zig");
+pub const cuda = @import("cuda.zig");
 
 // Force the compiler to pull in all referenced modules so link errors
 // surface at build time rather than at dlopen time.

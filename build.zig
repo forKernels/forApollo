@@ -76,6 +76,7 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
         .{ .name = "forternary", .path = "../forTernary" },
         .{ .name = "forgraph", .path = "../forGraph" },
         .{ .name = "fortime", .path = "../forTime" },
+        .{ .name = "forcuda", .path = "../forCUDA" },
     };
 
     for (siblings) |dep| {
