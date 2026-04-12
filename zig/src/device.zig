@@ -14,7 +14,6 @@ extern fn fc_rt_is_available() callconv(.c) c_int;
 /// Stub: always returns 0 when forCUDA is not linked (CPU-only builds)
 extern fn fc_rt_is_stub() callconv(.c) c_int;
 
-const c_int = std.c.c_int;
 
 var detected: ?Device = null;
 
