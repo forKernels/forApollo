@@ -18,6 +18,8 @@ prebuilt/             ← Prebuilt forApollo .a per platform (committed)
 python/               ← Python bindings (ctypes → Zig safety layer)
 ```
 
+> **DEPRECATED (2026-04-18):** `prebuilt/` directory does not exist in repo root. Pre-built forApollo `.a` artifacts now land under `zig-out/lib/` after `zig build`; the `-Duse-prebuilt` / `-Dgenerate-prebuilt` flags operate on those outputs.
+
 ### Three-Layer Design
 
 | Layer | Files | Purpose |
