@@ -207,6 +207,23 @@ pub fn build(b: *std.Build) void {
         const install = b.addInstallArtifact(static_lib, .{
             .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
         });
+
+    // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
+    if (t.cpu.arch == .aarch64 and t.os.tag == .linux) {
+        const nvfortran_path = "/opt/nvidia/hpc_sdk/Linux_aarch64/26.3/compilers/bin/nvfortran";
+        const repo_gpu_sources = [_][]const u8{  "forapollo_ekf_batch_gpu", };
+        for (repo_gpu_sources) |gpu_src| {
+            const compile = b.addSystemCommand(&.{
+                nvfortran_path, "-c", "-cuda", "-gpu=cc110", "-O3", "-Mfree", "-fPIC",
+            });
+            compile.addFileArg(b.path(b.fmt("src/gpu/{s}.cuf", .{gpu_src})));
+            compile.addArg("-o");
+            const obj = compile.addOutputFileArg(b.fmt("{s}.o", .{gpu_src}));
+            lib.addObjectFile(obj);
+            lib.step.dependOn(&compile.step);
+        }
+    }
+
         b.getInstallStep().dependOn(&install.step);
     }
 
