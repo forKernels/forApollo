@@ -1,11 +1,11 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Per FORKERNELS_BUILD_STANDARD:
-//   - Output: zig-out/{target}/lib/libforapollo.a
-//   - Targets: linux-arm64, linux-x86_64, macos-arm64, windows-x86_64
-//   - Sibling resolution: prebuilt/{target}/lib/ -> ../sibling/zig-out/{target}/lib/
-//     -> ../sibling/zig-out/lib/ (fallback)
+// Per FORKERNELS delivery standard (per-target branch):
+//   - This is the `winX86` branch; delivery dir matches branch name.
+//   - Output: zig-out/winX86/{lib,bin,include}/forapollo.lib
+//   - Sibling resolution: ../<sibling>/zig-out/winX86/lib/
+//     (each sibling repo is also on its own winX86 branch)
 //   - Prefix: forapollo_
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
@@ -18,6 +18,9 @@
 //   zig build -Ddev=true              # enable debug assertions and logging
 
 const std = @import("std");
+
+// Branch name = delivery dir name. Each target branch hardcodes its own.
+const BRANCH_NAME = "winX86";
 
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
@@ -81,10 +84,14 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
 
     for (siblings) |dep| {
         const sibling = dep.path;
-        // Standard paths
+        // Branch-name delivery (forKernels standard): each sibling is on its
+        // matching target branch and delivers to zig-out/<branch>/lib.
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        // forMath uses src/zig/zig-out/<branch>/lib for its module libs.
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/src/zig/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        // Platform-name fallback for siblings not yet on the delivery standard.
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
-        // Fallback for non-standardized repos
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
     }
@@ -117,8 +124,10 @@ fn linkDeps(
     }
 
     // System runtime libraries
-    const is_macos = step.rootModuleTarget().os.tag == .macos;
-    const is_linux = step.rootModuleTarget().os.tag == .linux;
+    const tgt = step.rootModuleTarget();
+    const is_macos = tgt.os.tag == .macos;
+    const is_linux = tgt.os.tag == .linux;
+    const is_windows = tgt.os.tag == .windows;
     if (is_macos) {
         step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
         step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
@@ -130,9 +139,22 @@ fn linkDeps(
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
+    } else if (is_windows) {
+        // Windows (MSYS2 UCRT64): gfortran runtime — GCC 15.2.0
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
+        // MINGW64 fallback
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib" });
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
     }
     step.linkSystemLibrary("gfortran");
     step.linkSystemLibrary("gomp");
+    if (is_windows) {
+        step.linkSystemLibrary("quadmath");
+        // libgcc_s.a is an import library; addObjectFile because LLD can't process it via -lgcc_s
+        step.addObjectFile(.{ .cwd_relative = "C:/msys64/ucrt64/lib/libgcc_s.a" });
+        step.linkSystemLibrary("gcc_eh");
+    }
     step.linkLibC();
 }
 
@@ -141,6 +163,22 @@ fn linkDeps(
 // ---------------------------------------------------------------------------
 
 pub fn build(b: *std.Build) void {
+    // ========================================================================
+    // forKernels per-target delivery: zig-out/<branch>/{lib,bin,include}
+    // Branch name selects the delivery dir. Downstream repos consume forApollo
+    // via, e.g., ../forApollo/zig-out/winX86/lib/forapollo.lib
+    //
+    // NOTE: addInstallFile (and friends) resolve `.prefix` against
+    // `b.install_path`, not `b.install_prefix` — see std/Build.zig
+    // getInstallPath. install_prefix is bookkeeping only; install_path is
+    // the field every install step actually reads.
+    // ========================================================================
+    b.install_path = b.pathFromRoot("zig-out/" ++ BRANCH_NAME);
+    b.install_prefix = b.install_path;
+    b.exe_dir = b.pathJoin(&.{ b.install_path, "bin" });
+    b.lib_dir = b.pathJoin(&.{ b.install_path, "lib" });
+    b.h_dir = b.pathJoin(&.{ b.install_path, "include" });
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const target_name = getTargetName(target.result);
@@ -204,9 +242,7 @@ pub fn build(b: *std.Build) void {
     }
 
     {
-        const install = b.addInstallArtifact(static_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
-        });
+        const install = b.addInstallArtifact(static_lib, .{});
         b.getInstallStep().dependOn(&install.step);
     }
 
@@ -235,9 +271,7 @@ pub fn build(b: *std.Build) void {
             shared_lib.step.dependOn(&make_step.step);
         }
 
-        const install = b.addInstallArtifact(shared_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
-        });
+        const install = b.addInstallArtifact(shared_lib, .{});
         shared_step.dependOn(&install.step);
     }
 

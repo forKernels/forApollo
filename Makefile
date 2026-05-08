@@ -42,6 +42,8 @@ UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
     PLATFORM := macos-arm64
+else ifneq (,$(findstring MINGW,$(UNAME_S))$(findstring MSYS,$(UNAME_S))$(findstring CYGWIN,$(UNAME_S))$(findstring UCRT64,$(UNAME_S)))
+    PLATFORM := windows-x86_64
 else ifeq ($(UNAME_M),x86_64)
     PLATFORM := linux-x86_64
 else
