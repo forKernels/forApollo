@@ -63,3 +63,4 @@ venv/
 # Prebuilt archives — built from source per target
 prebuilt/
 zig-out/
+build-logs/

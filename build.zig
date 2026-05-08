@@ -128,7 +128,9 @@ fn linkDeps(
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/14" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/14" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
     }
     step.linkSystemLibrary("gfortran");
