@@ -1,11 +1,12 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Per FORKERNELS_BUILD_STANDARD:
-//   - Output: zig-out/{target}/lib/libforapollo.a
-//   - Targets: linux-arm64, linux-x86_64, macos-arm64, windows-x86_64
-//   - Sibling resolution: prebuilt/{target}/lib/ -> ../sibling/zig-out/{target}/lib/
-//     -> ../sibling/zig-out/lib/ (fallback)
+// Per FORKERNELS delivery standard (per-target branch):
+//   - This is the `macos` branch; delivery dir matches branch name.
+//   - Output: zig-out/macos/{lib,bin,include}/libforapollo.a
+//   - Sibling resolution: ../<sibling>/zig-out/macos/lib/
+//     (each sibling repo is also on its own macos branch)
+//   - Target: Apple Silicon (aarch64-darwin) only.
 //   - Prefix: forapollo_
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
@@ -18,6 +19,9 @@
 //   zig build -Ddev=true              # enable debug assertions and logging
 
 const std = @import("std");
+
+// Branch name = delivery dir name. Each target branch hardcodes its own.
+const BRANCH_NAME = "macos";
 
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
@@ -81,10 +85,14 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
 
     for (siblings) |dep| {
         const sibling = dep.path;
-        // Standard paths
+        // Branch-name delivery (forKernels standard): each sibling is on its
+        // matching target branch and delivers to zig-out/<branch>/lib.
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        // forMath uses src/zig/zig-out/<branch>/lib for its module libs.
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/src/zig/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        // Platform-name fallback for siblings not yet on the delivery standard.
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
-        // Fallback for non-standardized repos
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
     }
@@ -143,6 +151,22 @@ fn linkDeps(
 // ---------------------------------------------------------------------------
 
 pub fn build(b: *std.Build) void {
+    // ========================================================================
+    // forKernels per-target delivery: zig-out/<branch>/{lib,bin,include}
+    // Branch name selects the delivery dir. Downstream repos consume forApollo
+    // via, e.g., ../forApollo/zig-out/macos/lib/libforapollo.a
+    //
+    // NOTE: addInstallFile (and friends) resolve `.prefix` against
+    // `b.install_path`, not `b.install_prefix` — see std/Build.zig
+    // getInstallPath. install_prefix is bookkeeping only; install_path is
+    // the field every install step actually reads.
+    // ========================================================================
+    b.install_path = b.pathFromRoot("zig-out/" ++ BRANCH_NAME);
+    b.install_prefix = b.install_path;
+    b.exe_dir = b.pathJoin(&.{ b.install_path, "bin" });
+    b.lib_dir = b.pathJoin(&.{ b.install_path, "lib" });
+    b.h_dir = b.pathJoin(&.{ b.install_path, "include" });
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const target_name = getTargetName(target.result);
@@ -206,28 +230,12 @@ pub fn build(b: *std.Build) void {
     }
 
     {
-        const install = b.addInstallArtifact(static_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
-        });
-
-    // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
-    if (t.cpu.arch == .aarch64 and t.os.tag == .linux) {
-        const nvfortran_path = "/opt/nvidia/hpc_sdk/Linux_aarch64/26.3/compilers/bin/nvfortran";
-        const repo_gpu_sources = [_][]const u8{  "forapollo_ekf_batch_gpu", };
-        for (repo_gpu_sources) |gpu_src| {
-            const compile = b.addSystemCommand(&.{
-                nvfortran_path, "-c", "-cuda", "-gpu=cc110", "-O3", "-Mfree", "-fPIC",
-            });
-            compile.addFileArg(b.path(b.fmt("src/gpu/{s}.cuf", .{gpu_src})));
-            compile.addArg("-o");
-            const obj = compile.addOutputFileArg(b.fmt("{s}.o", .{gpu_src}));
-            lib.addObjectFile(obj);
-            lib.step.dependOn(&compile.step);
-        }
-    }
-
+        const install = b.addInstallArtifact(static_lib, .{});
         b.getInstallStep().dependOn(&install.step);
     }
+
+    // Thor/Blackwell GPU kernels are compiled on the `thor` branch only;
+    // this branch (macos) skips nvfortran entirely.
 
     // -----------------------------------------------------------------------
     // Shared library: zig build shared  (links Fortran + all deps)
@@ -254,9 +262,7 @@ pub fn build(b: *std.Build) void {
             shared_lib.step.dependOn(&make_step.step);
         }
 
-        const install = b.addInstallArtifact(shared_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
-        });
+        const install = b.addInstallArtifact(shared_lib, .{});
         shared_step.dependOn(&install.step);
     }
 
