@@ -22,21 +22,16 @@ const std = @import("std");
 // Branch name = delivery dir name. Each target branch hardcodes its own.
 const BRANCH_NAME = "winX86";
 
+// forKernels branch-name delivery canon — winX86/linX86/thor/macos.
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
-        .macos => switch (t.cpu.arch) {
-            .aarch64 => "macos-arm64",
-            else => "macos-unknown",
-        },
+        .macos => "macos",
         .linux => switch (t.cpu.arch) {
-            .aarch64 => "linux-arm64",
-            .x86_64 => "linux-x86_64",
-            else => "linux-unknown",
+            .aarch64 => "thor",
+            .x86_64 => "linX86",
+            else => "unknown",
         },
-        .windows => switch (t.cpu.arch) {
-            .x86_64 => "windows-x86_64",
-            else => "windows-unknown",
-        },
+        .windows => "winX86",
         else => "unknown",
     };
 }
