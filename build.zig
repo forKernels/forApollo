@@ -21,19 +21,13 @@ const std = @import("std");
 
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
-        .macos => switch (t.cpu.arch) {
-            .aarch64 => "macos-arm64",
-            else => "macos-unknown",
-        },
+        .macos => "macos",
         .linux => switch (t.cpu.arch) {
-            .aarch64 => "linux-arm64",
-            .x86_64 => "linux-x86_64",
-            else => "linux-unknown",
+            .aarch64 => "thor",
+            .x86_64 => "linX86",
+            else => "unknown",
         },
-        .windows => switch (t.cpu.arch) {
-            .x86_64 => "windows-x86_64",
-            else => "windows-unknown",
-        },
+        .windows => "winX86",
         else => "unknown",
     };
 }
@@ -144,8 +138,14 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
     const target_name = getTargetName(target.result);
+
+    // Canonical delivery: prebuilt/lib/<short>/lib<name>.a — see
+    // ../forMath/docs/DELIVERY.md.
+    b.install_path = b.pathFromRoot(b.fmt("prebuilt/lib/{s}", .{target_name}));
+    b.install_prefix = b.install_path;
+    b.lib_dir = b.install_path;
 
     // -----------------------------------------------------------------------
     // Build options
@@ -207,7 +207,6 @@ pub fn build(b: *std.Build) void {
 
     {
         const install = b.addInstallArtifact(static_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
         });
 
     // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
@@ -255,7 +254,6 @@ pub fn build(b: *std.Build) void {
         }
 
         const install = b.addInstallArtifact(shared_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
         });
         shared_step.dependOn(&install.step);
     }
