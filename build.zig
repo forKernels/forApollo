@@ -205,6 +205,12 @@ pub fn build(b: *std.Build) void {
         static_lib.step.dependOn(&make_step.step);
     }
 
+    // Bundle forApollo's own Fortran kernels so libforapollo.a is a
+    // self-contained "Zig wraps Fortran" delivery. Sibling deps
+    // (forMath, forBayes, forCUDA, ...) remain external per the
+    // no-bundled-deps canon — consumers link those separately.
+    static_lib.addObjectFile(.{ .cwd_relative = fortran_archive });
+
     {
         const install = b.addInstallArtifact(static_lib, .{
         });
