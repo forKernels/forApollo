@@ -21,19 +21,13 @@ const std = @import("std");
 
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
-        .macos => switch (t.cpu.arch) {
-            .aarch64 => "macos-arm64",
-            else => "macos-unknown",
-        },
+        .macos => "macos",
         .linux => switch (t.cpu.arch) {
-            .aarch64 => "linux-arm64",
-            .x86_64 => "linux-x86_64",
-            else => "linux-unknown",
+            .aarch64 => "thor",
+            .x86_64 => "linX86",
+            else => "unknown",
         },
-        .windows => switch (t.cpu.arch) {
-            .x86_64 => "windows-x86_64",
-            else => "windows-unknown",
-        },
+        .windows => "winX86",
         else => "unknown",
     };
 }
@@ -144,8 +138,14 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
     const target_name = getTargetName(target.result);
+
+    // Canonical delivery: prebuilt/lib/<short>/lib<name>.a — see
+    // ../forMath/docs/DELIVERY.md.
+    b.install_path = b.pathFromRoot(b.fmt("prebuilt/lib/{s}", .{target_name}));
+    b.install_prefix = b.install_path;
+    b.lib_dir = b.install_path;
 
     // -----------------------------------------------------------------------
     // Build options
@@ -205,13 +205,18 @@ pub fn build(b: *std.Build) void {
         static_lib.step.dependOn(&make_step.step);
     }
 
+    // Bundle forApollo's own Fortran kernels so libforapollo.a is a
+    // self-contained "Zig wraps Fortran" delivery. Sibling deps
+    // (forMath, forBayes, forCUDA, ...) remain external per the
+    // no-bundled-deps canon — consumers link those separately.
+    static_lib.addObjectFile(.{ .cwd_relative = fortran_archive });
+
     {
         const install = b.addInstallArtifact(static_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
         });
 
     // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
-    if (t.cpu.arch == .aarch64 and t.os.tag == .linux) {
+    if (target.result.cpu.arch == .aarch64 and target.result.os.tag == .linux) {
         const nvfortran_path = "/opt/nvidia/hpc_sdk/Linux_aarch64/26.3/compilers/bin/nvfortran";
         const repo_gpu_sources = [_][]const u8{  "forapollo_ekf_batch_gpu", };
         for (repo_gpu_sources) |gpu_src| {
@@ -221,8 +226,8 @@ pub fn build(b: *std.Build) void {
             compile.addFileArg(b.path(b.fmt("src/gpu/{s}.cuf", .{gpu_src})));
             compile.addArg("-o");
             const obj = compile.addOutputFileArg(b.fmt("{s}.o", .{gpu_src}));
-            lib.addObjectFile(obj);
-            lib.step.dependOn(&compile.step);
+            static_lib.root_module.addObjectFile(obj);
+            static_lib.step.dependOn(&compile.step);
         }
     }
 
@@ -255,7 +260,6 @@ pub fn build(b: *std.Build) void {
         }
 
         const install = b.addInstallArtifact(shared_lib, .{
-            .dest_dir = .{ .override = .{ .custom = b.fmt("{s}/lib", .{target_name}) } },
         });
         shared_step.dependOn(&install.step);
     }

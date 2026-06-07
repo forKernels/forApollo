@@ -31,21 +31,20 @@ BUILD_DIR := build
 OBJ_DIR   := $(BUILD_DIR)/obj
 TEST_DIR  := tests/fortran
 
-# --- Platform detection for prebuilt target -----------------------------------
+# --- Platform detection — short canonical names ------------------------------
 #
-# Darwin (macOS) with Apple Silicon → macos-arm64
-# Linux aarch64 (Jetson, RPi)      → linux-arm64
-# Linux x86_64 (cloud, CI)         → linux-x86_64
+# forKernels canon: macos | winX86 | linX86 | thor (NO long names).
+# See ../forMath/docs/DELIVERY.md.
 #
 UNAME_S  := $(shell uname -s)
 UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
-    PLATFORM := macos-arm64
+    PLATFORM := macos
 else ifeq ($(UNAME_M),x86_64)
-    PLATFORM := linux-x86_64
+    PLATFORM := linX86
 else
-    PLATFORM := linux-arm64
+    PLATFORM := thor
 endif
 
 PREBUILT_DIR := prebuilt/$(PLATFORM)
