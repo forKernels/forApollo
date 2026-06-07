@@ -209,7 +209,23 @@ pub fn build(b: *std.Build) void {
     // self-contained "Zig wraps Fortran" delivery. Sibling deps
     // (forMath, forBayes, forCUDA, ...) remain external per the
     // no-bundled-deps canon — consumers link those separately.
-    static_lib.addObjectFile(.{ .cwd_relative = fortran_archive });
+    //
+    // NOTE: bundled as individual .o files — addObjectFile on a .a would
+    // embed libforapollo_fortran.a whole as a nested archive member, which
+    // downstream linkers reject (same failure mode as forFFT/forMath packs).
+    // Shared lib + tests still link the archive (correct for final links).
+    const fortran_obj_dir: []const u8 = if (use_prebuilt)
+        b.fmt("prebuilt/{s}/obj", .{target_name})
+    else
+        "build/obj";
+    const fortran_kernel_basenames = [_][]const u8{
+        "forapollo_dynamics", "forapollo_observe",  "forapollo_estimate",
+        "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
+        "forapollo_astro",     "forapollo_environ",  "forapollo_time",
+    };
+    for (fortran_kernel_basenames) |name| {
+        static_lib.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }) });
+    }
 
     {
         const install = b.addInstallArtifact(static_lib, .{
