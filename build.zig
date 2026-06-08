@@ -141,9 +141,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
     const target_name = getTargetName(target.result);
 
-    // Canonical delivery: prebuilt/lib/<short>/lib<name>.a — see
+    // Canonical delivery: prebuilt/<short>/lib<name>.a — see
     // ../forMath/docs/DELIVERY.md.
-    b.install_path = b.pathFromRoot(b.fmt("prebuilt/lib/{s}", .{target_name}));
+    b.install_path = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
     b.install_prefix = b.install_path;
     b.lib_dir = b.install_path;
 
