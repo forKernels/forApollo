@@ -8,7 +8,13 @@ The same Kalman filter that guided Apollo to the Moon tracks a portfolio's drift
 
 ## Architecture
 
-Zortran pattern: Fortran numerical kernels + Zig safety/dispatch layer + C ABI exports. No C code.
+Zortran three-layer pattern (forApollo is the **canonical reference model** for the [Zortran Wiring Contract](../Wintermute/docs/architecture/zortran-wiring-contract.html)):
+
+- **Layer 1 — Fortran kernel (internal).** Pure math in `src/fortran/*.f90`. `bind(C, name="fa_*")` uses the **internal-only** `fa_` prefix that **no consumer is permitted to bind**.
+- **Layer 2 — Producer Zig export (the sole public C-ABI).** `src/zig/exports.zig` declares `export fn forapollo_op(...) callconv(.c)`. It validates, marshals, dispatches, and **calls the Layer-1 kernel via `extern`**. This Zig compiles into `libforapollo.a`.
+- **Layer 3 — Consumer (Python / Wintermute / siblings).** Links the prebuilt `.a` and binds the **Zig export** `forapollo_*` only — never an `fa_*` Fortran symbol. Compiles zero forApollo Zig.
+
+Fortran does the math behind a closed door; Zig owns the boundary. No C code.
 
 ```
 src/fortran/          ← Fortran kernels (.f90), all bind(C, name="fa_*")
@@ -20,9 +26,9 @@ python/               ← Python bindings (ctypes → Zig safety layer)
 
 > **DEPRECATED (2026-04-18):** `prebuilt/` directory does not exist in repo root. Pre-built forApollo `.a` artifacts now land under `zig-out/lib/` after `zig build`; the `-Duse-prebuilt` / `-Dgenerate-prebuilt` flags operate on those outputs.
 
-### Three-Layer Design
+### Functional Tiers (distinct from the wiring layers above)
 
-| Layer | Files | Purpose |
+| Tier | Files | Purpose |
 |-------|-------|---------|
 | **Engine** | `estimate`, `propagate`, `guidance`, `coords` | Domain-agnostic core. Any state vector. |
 | **Models** | `dynamics`, `observe` | Pluggable catalog of built-in dynamics & measurement models with analytic Jacobians. |
@@ -31,17 +37,18 @@ python/               ← Python bindings (ctypes → Zig safety layer)
 ### Call Chain
 
 ```
-Python (ctypes) → forapollo_* (Zig safety) → fa_* (Fortran kernels)
+Consumer (Python ctypes / Wintermute / sibling) → forapollo_* (Layer 2: Zig export, sole public C-ABI) → fa_* (Layer 1: Fortran kernels, internal)
 ```
 
-Python never calls Fortran directly. All calls go through Zig's bounds checking and error mapping.
+No consumer ever binds an `fa_*` symbol — `fa_*` is internal-only and lives inside `libforapollo.a`. Every call enters through a Zig `export fn forapollo_*`, which validates, bounds-checks, marshals, and then calls the Fortran kernel via `extern`. The math stays in Fortran (no pure-Zig reimplementation — Anti-Pattern A); Zig owns the public boundary (Fortran never exposes `bind(C, name="forapollo_*")` — Anti-Pattern B).
 
 ## Naming Conventions
 
-- Fortran symbols: `fa_` prefix (e.g., `fa_ekf_predict`, `fa_lambert_solve`)
+- Fortran symbols (Layer 1, **internal-only** — no consumer binds these): `fa_` prefix (e.g., `fa_ekf_predict`, `fa_lambert_solve`)
 - Fortran files: `forapollo_*.f90`
-- Zig exports: `forapollo_*` (C ABI, what Python calls)
-- Module structure: one `.f90` per thematic group, matching Zig wrapper file
+- Zig exports (Layer 2, **the sole public C-ABI**): `forapollo_*` prefix — what Python/Wintermute/siblings link
+- NEVER the retired `fk_` prefix; forApollo's internal prefix is `fa_`, its public prefix is `forapollo_`
+- Module structure: one `.f90` per thematic group, matching its Zig wrapper file
 
 ## Matrix Convention
 
