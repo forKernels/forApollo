@@ -141,11 +141,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
     const target_name = getTargetName(target.result);
 
-    // Canonical delivery: prebuilt/lib/<short>/lib<name>.a — see
-    // ../forMath/docs/DELIVERY.md.
-    b.install_path = b.pathFromRoot(b.fmt("prebuilt/lib/{s}", .{target_name}));
+    // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
+    // <branch> = macos | thor | linX86 | winX86. Short names, NO lib/ segment.
+    b.install_path = b.pathFromRoot("prebuilt");
     b.install_prefix = b.install_path;
-    b.lib_dir = b.install_path;
+    b.lib_dir = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
 
     // -----------------------------------------------------------------------
     // Build options
@@ -229,6 +229,7 @@ pub fn build(b: *std.Build) void {
 
     {
         const install = b.addInstallArtifact(static_lib, .{
+            .dest_dir = .{ .override = .{ .custom = target_name } },
         });
 
     // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)

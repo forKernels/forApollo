@@ -60,7 +60,14 @@ venv/
 # debug information files
 *.dwo
 
-# Prebuilt archives — built from source per target
-prebuilt/
+# Prebuilt delivery — the per-branch lib<name>.a IS committed (CANON 2026-06-19)
+# so consumers grab prebuilt/<branch>/libforapollo.a without rebuilding.
+# Only build intermediates are ignored.
+prebuilt/**/obj/
+prebuilt/**/*.o
+prebuilt/**/*_fortran.a
+prebuilt/**/*.mod
+# ...but DO commit the final deliverable (overrides the blanket *.a above)
+!prebuilt/*/libforapollo.a
 zig-out/
 build-logs/
