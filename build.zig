@@ -1,11 +1,10 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Per FORKERNELS_BUILD_STANDARD:
-//   - Output: zig-out/{target}/lib/libforapollo.a
-//   - Targets: linux-arm64, linux-x86_64, macos-arm64, windows-x86_64
-//   - Sibling resolution: prebuilt/{target}/lib/ -> ../sibling/zig-out/{target}/lib/
-//     -> ../sibling/zig-out/lib/ (fallback)
+// Per FORKERNELS_BUILD_STANDARD (CANON 2026-06-19):
+//   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
+//   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
+//   - Sibling resolution: ../sibling/prebuilt/<branch>/
 //   - Prefix: forapollo_
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
@@ -141,11 +140,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
     const target_name = getTargetName(target.result);
 
-    // Canonical delivery: prebuilt/lib/<short>/lib<name>.a — see
-    // ../forMath/docs/DELIVERY.md.
-    b.install_path = b.pathFromRoot(b.fmt("prebuilt/lib/{s}", .{target_name}));
+    // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
+    // <branch> = macos | thor | linX86 | winX86. Short names, NO lib/ segment.
+    b.install_path = b.pathFromRoot("prebuilt");
     b.install_prefix = b.install_path;
-    b.lib_dir = b.install_path;
+    b.lib_dir = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
 
     // -----------------------------------------------------------------------
     // Build options
@@ -209,10 +208,27 @@ pub fn build(b: *std.Build) void {
     // self-contained "Zig wraps Fortran" delivery. Sibling deps
     // (forMath, forBayes, forCUDA, ...) remain external per the
     // no-bundled-deps canon — consumers link those separately.
-    static_lib.addObjectFile(.{ .cwd_relative = fortran_archive });
+    //
+    // NOTE: bundled as individual .o files — addObjectFile on a .a would
+    // embed libforapollo_fortran.a whole as a nested archive member, which
+    // downstream linkers reject (same failure mode as forFFT/forMath packs).
+    // Shared lib + tests still link the archive (correct for final links).
+    const fortran_obj_dir: []const u8 = if (use_prebuilt)
+        b.fmt("prebuilt/{s}/obj", .{target_name})
+    else
+        "build/obj";
+    const fortran_kernel_basenames = [_][]const u8{
+        "forapollo_dynamics", "forapollo_observe",  "forapollo_estimate",
+        "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
+        "forapollo_astro",     "forapollo_environ",  "forapollo_time",
+    };
+    for (fortran_kernel_basenames) |name| {
+        static_lib.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }) });
+    }
 
     {
         const install = b.addInstallArtifact(static_lib, .{
+            .dest_dir = .{ .override = .{ .custom = target_name } },
         });
 
     // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
