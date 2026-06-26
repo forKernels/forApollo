@@ -1,11 +1,10 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Per FORKERNELS_BUILD_STANDARD:
-//   - Output: zig-out/{target}/lib/libforapollo.a
-//   - Targets: linux-arm64, linux-x86_64, macos-arm64, windows-x86_64
-//   - Sibling resolution: prebuilt/{target}/lib/ -> ../sibling/zig-out/{target}/lib/
-//     -> ../sibling/zig-out/lib/ (fallback)
+// Per FORKERNELS_BUILD_STANDARD (CANON 2026-06-19):
+//   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
+//   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
+//   - Sibling resolution: ../sibling/prebuilt/<branch>/
 //   - Prefix: forapollo_
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
