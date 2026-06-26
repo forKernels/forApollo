@@ -1,10 +1,11 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Per FORKERNELS_BUILD_STANDARD (CANON 2026-06-19):
-//   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
-//   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
-//   - Sibling resolution: ../sibling/prebuilt/<branch>/
+// Per FORKERNELS_BUILD_STANDARD:
+//   - Output: zig-out/{target}/lib/libforapollo.a
+//   - Targets: linux-arm64, linux-x86_64, macos-arm64, windows-x86_64
+//   - Sibling resolution: prebuilt/{target}/lib/ -> ../sibling/zig-out/{target}/lib/
+//     -> ../sibling/zig-out/lib/ (fallback)
 //   - Prefix: forapollo_
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
@@ -140,11 +141,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
     const target_name = getTargetName(target.result);
 
-    // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
-    // <branch> = macos | thor | linX86 | winX86. Short names, NO lib/ segment.
-    b.install_path = b.pathFromRoot("prebuilt");
+    // Canonical delivery: prebuilt/<short>/lib<name>.a — see
+    // ../forMath/docs/DELIVERY.md.
+    b.install_path = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
     b.install_prefix = b.install_path;
-    b.lib_dir = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
+    b.lib_dir = b.install_path;
 
     // -----------------------------------------------------------------------
     // Build options
@@ -228,7 +229,6 @@ pub fn build(b: *std.Build) void {
 
     {
         const install = b.addInstallArtifact(static_lib, .{
-            .dest_dir = .{ .override = .{ .custom = target_name } },
         });
 
     // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
