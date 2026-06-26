@@ -178,6 +178,7 @@ pub fn build(b: *std.Build) void {
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "dev", dev);
     build_opts.addOption(bool, "use_prebuilt", use_prebuilt);
+    build_opts.addOption(bool, "gpu", gpu);
 
     // -----------------------------------------------------------------------
     // Resolve Fortran archive path (per-target)
@@ -198,12 +199,23 @@ pub fn build(b: *std.Build) void {
     // Static library: libforapollo.a (Zig-only, no external linking)
     // -----------------------------------------------------------------------
 
+    // GPU dispatch layer (zig/src/*) is a separate module tree. Expose it under
+    // the name "gpu_dispatch" so exports.zig can pull it in via @import without
+    // crossing module-path boundaries. Lazily analyzed: only referenced under
+    // -Dgpu, so the default CPU build never code-gens it (stays lean).
+    const gpu_dispatch_mod = b.createModule(.{
+        .root_source_file = b.path("zig/src/gpu_dispatch.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
     });
     root_module.addOptions("build_opts", build_opts);
+    root_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
     const static_lib = b.addLibrary(.{
         .linkage = .static,
@@ -257,6 +269,10 @@ pub fn build(b: *std.Build) void {
             static_lib.root_module.addObjectFile(obj);
             static_lib.step.dependOn(&compile.step);
         }
+        // forCUDA runtime (fc_rt_*) for the GPU dispatch layer (zig/src/*).
+        // Resolved at the consumer's final link; the path documents the dep.
+        static_lib.addLibraryPath(.{ .cwd_relative = "../forCUDA/prebuilt/linux-arm64/lib" });
+        static_lib.linkSystemLibrary("forcuda");
     }
 
         b.getInstallStep().dependOn(&install.step);
@@ -274,6 +290,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         shared_module.addOptions("build_opts", build_opts);
+        shared_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
         const shared_lib = b.addLibrary(.{
             .linkage = .dynamic,
@@ -302,6 +319,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_module.addOptions("build_opts", build_opts);
+    test_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
     const unit_tests = b.addTest(.{
         .root_module = test_module,
