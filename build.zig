@@ -162,6 +162,18 @@ pub fn build(b: *std.Build) void {
         "Enable debug assertions and verbose logging",
     ) orelse false;
 
+    // GPU (Thor/Blackwell) kernels are an opt-in extra. They require nvfortran +
+    // CUDA runtime and pull undefined CUDA symbols into the archive, which breaks
+    // the lean, self-contained CPU delivery. Default OFF; the canonical
+    // prebuilt/<branch>/libforapollo.a is CPU-only. fa_ekf_predict_batch_gpu is
+    // not referenced by the Zig public ABI, so omitting it leaves no unresolved
+    // forapollo_/fa_ symbols.
+    const gpu = b.option(
+        bool,
+        "gpu",
+        "Compile and bundle nvfortran CUDA kernels (Thor/Blackwell, opt-in)",
+    ) orelse false;
+
     // Build-time options passed into Zig source
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "dev", dev);
@@ -231,8 +243,8 @@ pub fn build(b: *std.Build) void {
             .dest_dir = .{ .override = .{ .custom = target_name } },
         });
 
-    // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
-    if (target.result.cpu.arch == .aarch64 and target.result.os.tag == .linux) {
+    // Compile GPU kernels via nvfortran (opt-in via -Dgpu, Thor/Blackwell only)
+    if (gpu and target.result.cpu.arch == .aarch64 and target.result.os.tag == .linux) {
         const nvfortran_path = "/opt/nvidia/hpc_sdk/Linux_aarch64/26.3/compilers/bin/nvfortran";
         const repo_gpu_sources = [_][]const u8{  "forapollo_ekf_batch_gpu", };
         for (repo_gpu_sources) |gpu_src| {
