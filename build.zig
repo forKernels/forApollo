@@ -193,7 +193,10 @@ pub fn build(b: *std.Build) void {
     // Stage 1: Build Fortran kernels via make (if not using prebuilt)
     // -----------------------------------------------------------------------
 
-    const make_step = b.addSystemCommand(&.{ "make", "lib" });
+    // Pass TARGET so Stage 1 (Makefile) writes its per-target Fortran objects to
+    // the same dir Stage 2 reads (prebuilt/<target>/obj) — even when cross-
+    // compiling (-Dtarget=...). All 4 targets build without clobbering.
+    const make_step = b.addSystemCommand(&.{ "make", "lib", b.fmt("TARGET={s}", .{target_name}) });
 
     // -----------------------------------------------------------------------
     // Static library: libforapollo.a (Zig-only, no external linking)
@@ -237,10 +240,10 @@ pub fn build(b: *std.Build) void {
     // embed libforapollo_fortran.a whole as a nested archive member, which
     // downstream linkers reject (same failure mode as forFFT/forMath packs).
     // Shared lib + tests still link the archive (correct for final links).
-    const fortran_obj_dir: []const u8 = if (use_prebuilt)
-        b.fmt("prebuilt/{s}/obj", .{target_name})
-    else
-        "build/obj";
+    // Fortran objects always live at prebuilt/<target>/obj — the Makefile
+    // (Stage 1) writes them there per-target, so the make-output path always
+    // equals this Stage-2 read path for the SAME target.
+    const fortran_obj_dir = b.fmt("prebuilt/{s}/obj", .{target_name});
     const fortran_kernel_basenames = [_][]const u8{
         "forapollo_dynamics", "forapollo_observe",  "forapollo_estimate",
         "forapollo_propagate", "forapollo_guidance", "forapollo_coords",

@@ -109,7 +109,7 @@ def particle_filter_predict(n, particles, weights, n_particles, Q, dt, model_id=
     """SIR Particle filter predict step."""
     particles = _arr(particles).copy()
     weights = _arr(weights).copy()
-    # Delegates to forapollo_sir_predict
+    # Delegates to fa_pf_sir_predict
     return particles, weights
 
 
@@ -149,7 +149,7 @@ def guidance_lambert(r1, r2, tof, mu, direction=0):
     v2 = np.zeros(3, dtype=np.float64)
     info_val, info_p = _make_info()
     from forapollo import lib as _lib
-    _lib.forapollo_guidance_lambert(_f64p(r1), _f64p(r2), c_double(tof), c_double(mu),
+    _lib.fa_guidance_lambert(_f64p(r1), _f64p(r2), c_double(tof), c_double(mu),
                                     _f64p(v1), _f64p(v2), c_int(direction), info_p)
     return v1, v2, info_val.value
 
@@ -165,7 +165,7 @@ def guidance_lqr(n, m, A, B, Q, R):
     S = np.zeros(n * n, dtype=np.float64)
     info_val, info_p = _make_info()
     from forapollo import lib as _lib
-    _lib.forapollo_guidance_lqr(c_int(n), c_int(m), _f64p(A), _f64p(B),
+    _lib.fa_guidance_lqr(c_int(n), c_int(m), _f64p(A), _f64p(B),
                                  _f64p(Q_mat), _f64p(R_mat), _f64p(K), _f64p(S), info_p)
     return K.reshape(m, n), S.reshape(n, n), info_val.value
 
@@ -178,7 +178,7 @@ def guidance_pure_pursuit(position, target, lookahead):
     steer = c_double(0.0)
     info_val, info_p = _make_info()
     from forapollo import lib as _lib
-    _lib.forapollo_guidance_pure_pursuit(_f64p(pos), _f64p(tgt), c_double(lookahead),
+    _lib.fa_guidance_pure_pursuit(_f64p(pos), _f64p(tgt), c_double(lookahead),
                                          ctypes.byref(steer), info_p)
     return float(steer.value), info_val.value
 
@@ -191,7 +191,7 @@ def guidance_stanley(position, path_point, heading, speed, k):
     steer = c_double(0.0)
     info_val, info_p = _make_info()
     from forapollo import lib as _lib
-    _lib.forapollo_guidance_stanley(_f64p(pos), _f64p(path), c_double(heading),
+    _lib.fa_guidance_stanley(_f64p(pos), _f64p(path), c_double(heading),
                                      c_double(speed), c_double(k),
                                      ctypes.byref(steer), info_p)
     return float(steer.value), info_val.value
@@ -215,7 +215,7 @@ def guidance_min_energy(n, x, x_target, t_go):
     a_cmd = np.zeros(n, dtype=np.float64)
     info_val, info_p = _make_info()
     from forapollo import lib as _lib
-    _lib.forapollo_guidance_min_energy(c_int(n), _f64p(x), _f64p(xt),
+    _lib.fa_guidance_min_energy(c_int(n), _f64p(x), _f64p(xt),
                                         c_double(t_go), _f64p(a_cmd), info_p)
     return a_cmd, info_val.value
 

@@ -24,36 +24,50 @@ MARCH    ?= native
 FFLAGS   := -O3 -ftree-vectorize -fPIC -cpp -std=f2008 -fall-intrinsics \
             -Wall -Wextra -Wimplicit-interface -fopenmp -march=$(MARCH)
 
-# --- Directories --------------------------------------------------------------
-
-SRC_DIR   := src/fortran
-BUILD_DIR := build
-OBJ_DIR   := $(BUILD_DIR)/obj
-TEST_DIR  := tests/fortran
-
-# --- Platform detection — short canonical names ------------------------------
+# --- Target detection — short canonical names --------------------------------
 #
-# forKernels canon: macos | winX86 | linX86 | thor (NO long names).
-# See ../forMath/docs/DELIVERY.md.
+# forKernels canon: thor | linX86 | winX86 | macos (NO long names).
+# build.zig getTargetName() emits the SAME short names; the obj dir below MUST
+# match build.zig's Stage-2 read path (prebuilt/<target>/obj). See
+# ../forMath/docs/DELIVERY.md.
+#
+# Host auto-detection covers thor/linX86/macos. winX86 is a cross target:
+#   make TARGET=winX86
+# Stage 2 (build.zig) invokes `make lib TARGET=<target>` so Stage 1 writes to
+# the same per-target obj dir Stage 2 reads — all 4 targets build, no clobber.
 #
 UNAME_S  := $(shell uname -s)
 UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
-    PLATFORM := macos
+    DETECTED_TARGET := macos
 else ifeq ($(UNAME_M),x86_64)
-    PLATFORM := linX86
+    DETECTED_TARGET := linX86
 else
-    PLATFORM := thor
+    DETECTED_TARGET := thor
 endif
 
-PREBUILT_DIR := prebuilt/$(PLATFORM)
+TARGET ?= $(DETECTED_TARGET)
+
+# --- Directories --------------------------------------------------------------
+
+SRC_DIR      := src/fortran
+BUILD_DIR    := build
+TEST_DIR     := tests/fortran
+PREBUILT_DIR := prebuilt/$(TARGET)
+
+# Fortran objects → prebuilt/<target>/obj — the SAME path build.zig (Stage 2)
+# reads via `prebuilt/{target}/obj`. Per-target so `make TARGET=t` never
+# clobbers another target's objects. (build intermediates: prebuilt/**/obj/
+# is gitignored; only the final prebuilt/<target>/libforapollo.a is committed.)
+OBJ_DIR      := $(PREBUILT_DIR)/obj
 
 # --- Output archive -----------------------------------------------------------
 #
-# Archive goes into build/{platform}/lib/ to match Zig build.zig resolution.
+# Intermediate Fortran archive goes into build/{target}/lib/ to match Zig
+# build.zig's shared/test resolution (build/<target>/lib/libforapollo_fortran.a).
 #
-PLAT_LIB_DIR := $(BUILD_DIR)/$(PLATFORM)/lib
+PLAT_LIB_DIR := $(BUILD_DIR)/$(TARGET)/lib
 LIB          := $(PLAT_LIB_DIR)/libforapollo_fortran.a
 
 # --- Source compilation order -------------------------------------------------
