@@ -5,7 +5,7 @@
 //   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
 //   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
 //   - Sibling resolution: ../sibling/prebuilt/<branch>/
-//   - Prefix: forapollo_
+//   - Public C-ABI prefix: fa_  (kernels ship the public symbols directly)
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
 // Stage 2: This file links Fortran objects + deps -> static + shared libraries
