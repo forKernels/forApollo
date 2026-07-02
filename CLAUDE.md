@@ -24,7 +24,7 @@ prebuilt/             ← Prebuilt forApollo .a per platform (committed)
 python/               ← Python bindings (ctypes → Zig safety layer)
 ```
 
-> **DEPRECATED (2026-04-18):** `prebuilt/` directory does not exist in repo root. Pre-built forApollo `.a` artifacts now land under `zig-out/lib/` after `zig build`; the `-Duse-prebuilt` / `-Dgenerate-prebuilt` flags operate on those outputs.
+> **Delivery (CANON, updated 2026-07-02):** `zig build` assembles `prebuilt/<target>/libforapollo.a` via `tools/wrap.zig` — the Zig exports object + this repo's Fortran `.o` are `ld -r` combined and everything except `forapollo_*` is internalized (`fa_*` and the `mat_*/vec_*` helpers become local). The wrap has a built-in gate: any public non-`forapollo_` symbol fails the build. `<target>` is one of the short names `macos | thor | linX86 | winX86`.
 
 ### Functional Tiers (distinct from the wiring layers above)
 
