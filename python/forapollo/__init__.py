@@ -1,4 +1,4 @@
-"""forApollo -- Python ctypes bindings for libforapollo (forapollo_* C ABI).
+"""forApollo -- Python ctypes bindings for libforapollo (fa_* C ABI).
 
 Universal state estimation, navigation, and guidance.
 The same Kalman filter that guided Apollo to the Moon.

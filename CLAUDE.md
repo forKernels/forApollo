@@ -11,8 +11,8 @@ The same Kalman filter that guided Apollo to the Moon tracks a portfolio's drift
 Zortran three-layer pattern (forApollo is the **canonical reference model** for the [Zortran Wiring Contract](../Wintermute/docs/architecture/zortran-wiring-contract.html)):
 
 - **Layer 1 — Fortran kernel (internal).** Pure math in `src/fortran/*.f90`. `bind(C, name="fa_*")` uses the **internal-only** `fa_` prefix that **no consumer is permitted to bind**.
-- **Layer 2 — Producer Zig export (the sole public C-ABI).** `src/zig/exports.zig` declares `export fn forapollo_op(...) callconv(.c)`. It validates, marshals, dispatches, and **calls the Layer-1 kernel via `extern`**. This Zig compiles into `libforapollo.a`.
-- **Layer 3 — Consumer (Python / Wintermute / siblings).** Links the prebuilt `.a` and binds the **Zig export** `forapollo_*` only — never an `fa_*` Fortran symbol. Compiles zero forApollo Zig.
+- **Layer 2 — Producer Zig export (the sole public C-ABI).** `src/zig/exports.zig` declares `export fn fapo_op(...) callconv(.c)`. It validates, marshals, dispatches, and **calls the Layer-1 kernel via `extern`**. This Zig compiles into `libforapollo.a`.
+- **Layer 3 — Consumer (Python / Wintermute / siblings).** Links the prebuilt `.a` and binds the **Zig export** `fapo_*` only — never an `fa_*` Fortran symbol. Compiles zero forApollo Zig.
 
 Fortran does the math behind a closed door; Zig owns the boundary. No C code.
 
@@ -24,7 +24,7 @@ prebuilt/             ← Prebuilt forApollo .a per platform (committed)
 python/               ← Python bindings (ctypes → Zig safety layer)
 ```
 
-> **Delivery (CANON, updated 2026-07-02):** `zig build` assembles `prebuilt/<target>/libforapollo.a` via `tools/wrap.zig` — the Zig exports object + this repo's Fortran `.o` are `ld -r` combined and everything except `forapollo_*` is internalized (`fa_*` and the `mat_*/vec_*` helpers become local). The wrap has a built-in gate: any public non-`forapollo_` symbol fails the build. `<target>` is one of the short names `macos | thor | linX86 | winX86`.
+> **Delivery (CANON, updated 2026-07-02):** `zig build` assembles `prebuilt/<target>/libforapollo.a` via `tools/wrap.zig` — the Zig exports object + this repo's Fortran `.o` are `ld -r` combined and everything except `fapo_*` is internalized (`fa_*` and the `mat_*/vec_*` helpers become local). The wrap has a built-in gate: any public non-`fapo_` symbol fails the build. `<target>` is one of the short names `macos | thor | linX86 | winX86`.
 
 ### Functional Tiers (distinct from the wiring layers above)
 
@@ -37,17 +37,17 @@ python/               ← Python bindings (ctypes → Zig safety layer)
 ### Call Chain
 
 ```
-Consumer (Python ctypes / Wintermute / sibling) → forapollo_* (Layer 2: Zig export, sole public C-ABI) → fa_* (Layer 1: Fortran kernels, internal)
+Consumer (Python ctypes / Wintermute / sibling) → fapo_* (Layer 2: Zig export, sole public C-ABI) → fa_* (Layer 1: Fortran kernels, internal)
 ```
 
-No consumer ever binds an `fa_*` symbol — `fa_*` is internal-only and lives inside `libforapollo.a`. Every call enters through a Zig `export fn forapollo_*`, which validates, bounds-checks, marshals, and then calls the Fortran kernel via `extern`. The math stays in Fortran (no pure-Zig reimplementation — Anti-Pattern A); Zig owns the public boundary (Fortran never exposes `bind(C, name="forapollo_*")` — Anti-Pattern B).
+No consumer ever binds an `fa_*` symbol — `fa_*` is internal-only and lives inside `libforapollo.a`. Every call enters through a Zig `export fn fapo_*`, which validates, bounds-checks, marshals, and then calls the Fortran kernel via `extern`. The math stays in Fortran (no pure-Zig reimplementation — Anti-Pattern A); Zig owns the public boundary (Fortran never exposes `bind(C, name="fapo_*")` — Anti-Pattern B).
 
 ## Naming Conventions
 
 - Fortran symbols (Layer 1, **internal-only** — no consumer binds these): `fa_` prefix (e.g., `fa_ekf_predict`, `fa_lambert_solve`)
 - Fortran files: `forapollo_*.f90`
-- Zig exports (Layer 2, **the sole public C-ABI**): `forapollo_*` prefix — what Python/Wintermute/siblings link
-- NEVER the retired `fk_` prefix; forApollo's internal prefix is `fa_`, its public prefix is `forapollo_`
+- Zig exports (Layer 2, **the sole public C-ABI**): `fapo_*` prefix — what Python/Wintermute/siblings link
+- NEVER the retired `fk_` prefix; forApollo's internal prefix is `fa_`, its public prefix is `fapo_` (short-prefix canon 2026-07-02; `forapollo_` retired)
 - Module structure: one `.f90` per thematic group, matching its Zig wrapper file
 
 ## Matrix Convention
