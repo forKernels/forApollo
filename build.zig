@@ -5,8 +5,9 @@
 //   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
 //   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
 //   - Sibling resolution: ../sibling/prebuilt/<branch>/
-//   - Public C-ABI prefix: forapollo_ (Zig exports, sole public surface);
-//     fa_ is the INTERNAL Fortran bind(C) prefix — internalized by tools/wrap.zig
+//   - Public C-ABI prefix: fapo_ (Zig exports, sole public surface; short-prefix
+//     canon 2026-07-02, forapollo_ retired); fa_ is the INTERNAL Fortran bind(C)
+//     prefix — internalized by tools/wrap.zig
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
 // Stage 2: This file links Fortran objects + deps -> static + shared libraries
@@ -202,7 +203,7 @@ pub fn build(b: *std.Build) void {
     // -----------------------------------------------------------------------
     // Static library: libforapollo.a — assembled by tools/wrap.zig.
     // Zig exports object + this repo's Fortran .o are dup/MOD-localized,
-    // ld -r combined, then EVERYTHING except forapollo_* is internalized
+    // ld -r combined, then EVERYTHING except fapo_* is internalized
     // (fa_* is internal-only per the wiring contract — the wrap enforces it
     // with a gate that fails the build on any leak). Sibling deps (forMath,
     // forCUDA, ...) remain external per the no-bundled-deps canon.
@@ -245,7 +246,7 @@ pub fn build(b: *std.Build) void {
     wrap_run.has_side_effects = true; // writes prebuilt/<target>/libforapollo.a
     wrap_run.addArg(b.pathFromRoot(b.fmt("prebuilt/{s}/libforapollo.a", .{target_name})));
     wrap_run.addArg(b.pathFromRoot(b.fmt(".zig-cache/wrap/{s}", .{target_name})));
-    wrap_run.addArg("*forapollo_*");
+    wrap_run.addArg("*fapo_*");
     wrap_run.addFileArg(exports_obj.getEmittedBin());
 
     // Fortran objects always live at prebuilt/<target>/obj — the Makefile

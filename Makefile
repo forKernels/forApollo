@@ -18,7 +18,9 @@
 
 # --- Configurable flags -------------------------------------------------------
 
-FC       ?= gfortran
+# NOTE: plain `=`, not `?=` — FC is a make BUILTIN (defaults to f77), so `?=`
+# never fires. Command-line `make FC=...` still overrides.
+FC       = gfortran
 MARCH    ?= native
 
 FFLAGS   := -O3 -ftree-vectorize -fPIC -cpp -std=f2008 -fall-intrinsics \
