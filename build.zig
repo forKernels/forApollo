@@ -139,7 +139,7 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseFast — Debug materializes 'undefined' as real bytes and shipped a 68MB forCV archive)") orelse .ReleaseFast;
     const target_name = getTargetName(target.result);
 
     // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
