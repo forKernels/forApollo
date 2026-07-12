@@ -1,0 +1,24 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>forApollo — delivery status</title>
+<style>body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,'SF Mono',Menlo,monospace;max-width:900px;margin:2rem auto;padding:0 1rem;line-height:1.55}
+h1{color:#58a6ff;border-bottom:2px solid #21262d;padding-bottom:.4rem}h2{color:#7ee787;margin-top:1.6rem}
+table{border-collapse:collapse;width:100%;margin:.8rem 0}td,th{border:1px solid #21262d;padding:.45rem .7rem;text-align:left}
+th{background:#161b22;color:#58a6ff}tr:nth-child(even){background:#161b22}
+code{background:#161b22;color:#ffa657;padding:.1rem .35rem;border-radius:4px}
+.ok{color:#7ee787}.warn{color:#d29922}.big{font-size:1.25rem;font-weight:700}
+.foot{color:#484f58;font-size:.85rem;margin-top:2rem;border-top:1px solid #21262d;padding-top:.6rem}</style></head><body>
+<h1>forApollo</h1>
+<p><span class="big ok">62</span> public C-ABI exports · prefix <code>fapo_*</code> · <span class="big">0.18 MB</span> ReleaseFast</p>
+<h2>Delivery</h2>
+<table>
+<tr><th>Archive</th><td><code>prebuilt/macos/libforapollo.a</code> (flat short-name canon)</td></tr>
+<tr><th>Public symbols</th><td>62 (prefix-conformant: 62) — <span class="ok">gate PASS</span></td></tr>
+<tr><th>Build</th><td><code>zig build</code> (defaults to <b>ReleaseFast</b>; Debug ships bloated 'undefined' buffers)</td></tr>
+<tr><th>Contract</th><td>Zortran: Zig = sole public C-ABI; Fortran internal; consumers <b>link this archive</b>, compile zero forApollo source</td></tr>
+<tr><th>HEAD</th><td><code>5f0af85 build: ReleaseFast delivery default — Debug was shipping bloated archives</code></td></tr>
+</table>
+<h2>Export families</h2>
+<table><tr><th>Family</th><th>Exports</th></tr><tr><td><code>fapo_guidance_*</code></td><td>12</td></tr><tr><td><code>fapo_coords_*</code></td><td>7</td></tr><tr><td><code>fapo_astro_*</code></td><td>5</td></tr><tr><td><code>fapo_pf_*</code></td><td>4</td></tr><tr><td><code>fapo_environ_*</code></td><td>3</td></tr><tr><td><code>fapo_eskf_*</code></td><td>3</td></tr><tr><td><code>fapo_propagate_*</code></td><td>3</td></tr><tr><td><code>fapo_time_*</code></td><td>3</td></tr><tr><td><code>fapo_batch_*</code></td><td>2</td></tr><tr><td><code>fapo_dynamics_*</code></td><td>2</td></tr><tr><td><code>fapo_ekf_*</code></td><td>2</td></tr><tr><td><code>fapo_if_*</code></td><td>2</td></tr><tr><td><code>fapo_kf_*</code></td><td>2</td></tr><tr><td><code>fapo_observe_*</code></td><td>2</td></tr></table>
+<h2>Sibling dependencies (undefined refs — consumer-linked)</h2>
+<table><tr><th>Producer prefix</th><th>Refs</th></tr><tr><td colspan=2>none — self-contained</td></tr></table>
+<p class="foot">Generated 2026-07-03 from the live archive (nm/stat) — numbers are measured, not maintained by hand. forKernels org sweep task #24.</p>
+</body></html>

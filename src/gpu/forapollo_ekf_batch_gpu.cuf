@@ -1,0 +1,70 @@
+! forApollo GPU Batched EKF — CUDA Fortran
+! Copyright The Fantastic Planet — By David Clabaugh
+! Batched Extended Kalman Filter: predict + update for N independent filters
+! Each filter has state_dim x state_dim covariance, state_dim state vector
+! Use case: 30+ humanoid joints, 1000 vehicle fleet, 64 IMU fusion
+module forapollo_ekf_gpu_mod
+    use cudafor
+    implicit none
+contains
+    ! Batched EKF predict: x = F*x, P = F*P*F^T + Q
+    ! Each thread handles one filter instance
+    ! For small state_dim (6-12), serial matrix ops per thread are fine
+    attributes(global) subroutine ekf_predict_kernel(x, P, F, Q, n_filters, state_dim)
+        real(8), device, intent(inout) :: x(state_dim, *)
+        real(8), device, intent(inout) :: P(state_dim, state_dim, *)
+        real(8), device, intent(in) :: F(state_dim, state_dim), Q(state_dim, state_dim)
+        integer, value :: n_filters, state_dim
+        integer :: filt, i, j, k
+        real(8) :: temp(12), FP(12, 12)  ! max state_dim = 12
+
+        filt = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+        if (filt > n_filters) return
+
+        ! x_pred = F * x (state_dim vector)
+        do i = 1, state_dim
+            temp(i) = 0.0d0
+            do k = 1, state_dim
+                temp(i) = temp(i) + F(i, k) * x(k, filt)
+            end do
+        end do
+        do i = 1, state_dim
+            x(i, filt) = temp(i)
+        end do
+
+        ! P_pred = F * P * F^T + Q
+        ! Step 1: FP = F * P
+        do i = 1, state_dim
+            do j = 1, state_dim
+                FP(i, j) = 0.0d0
+                do k = 1, state_dim
+                    FP(i, j) = FP(i, j) + F(i, k) * P(k, j, filt)
+                end do
+            end do
+        end do
+        ! Step 2: P = FP * F^T + Q
+        do i = 1, state_dim
+            do j = 1, state_dim
+                P(i, j, filt) = Q(i, j)
+                do k = 1, state_dim
+                    P(i, j, filt) = P(i, j, filt) + FP(i, k) * F(j, k)
+                end do
+            end do
+        end do
+    end subroutine
+end module
+
+subroutine fa_ekf_predict_batch_gpu(d_x, d_P, d_F, d_Q, n_filters, state_dim) &
+    bind(C, name="fa_ekf_predict_batch_gpu")
+    use iso_c_binding
+    use cudafor
+    use forapollo_ekf_gpu_mod
+    integer(c_int), value :: n_filters, state_dim
+    type(c_ptr), value :: d_x, d_P, d_F, d_Q
+    real(8), device, pointer :: x_dev(:,:), P_dev(:,:,:), F_dev(:,:), Q_dev(:,:)
+    call c_f_pointer(d_x, x_dev, [state_dim, n_filters])
+    call c_f_pointer(d_P, P_dev, [state_dim, state_dim, n_filters])
+    call c_f_pointer(d_F, F_dev, [state_dim, state_dim])
+    call c_f_pointer(d_Q, Q_dev, [state_dim, state_dim])
+    call ekf_predict_kernel<<<dim3((n_filters+255)/256,1,1), dim3(256,1,1)>>>(x_dev, P_dev, F_dev, Q_dev, n_filters, state_dim)
+end subroutine

@@ -2,15 +2,21 @@
 //
 // exports.zig — C ABI exports for Python/Rust/C++ consumers
 //
-// All functions prefixed forapollo_* and call fa_* Fortran kernels through
-// the safety + dispatch layers. This is the public API of libforapollo.
+// All functions prefixed fapo_* (short-prefix canon 2026-07-02; forapollo_
+// retired) and call fa_* Fortran kernels through the safety + dispatch
+// layers. This is the public API of libforapollo. fa_* stays INTERNAL —
+// tools/wrap.zig internalizes it in the delivered archive and gates leaks.
 //
-// Flow: caller → forapollo_* (validate) → dispatch → fortran fa_*
+// Flow: caller → fapo_* (validate) → dispatch → fortran fa_*
 
 const safety = @import("safety.zig");
 const fortran = @import("fortran.zig");
-const dispatch = @import("dispatch.zig");
+// Public re-export so consumers can call `@import("forapollo").dispatch.<wrapper>(...)`
+// (per CANON: consumer never declares its own `extern "c" fn fapo_*`).
+pub const dispatch = @import("dispatch.zig");
 pub const cuda = @import("cuda.zig");
+
+const build_opts = @import("build_opts");
 
 // Force the compiler to pull in all referenced modules so link errors
 // surface at build time rather than at dlopen time.
@@ -19,11 +25,45 @@ comptime {
 }
 
 // ============================================================================
+// GPU fast-path (opt-in -Dgpu, Thor/Blackwell SM_110)
+// ============================================================================
+// Gated by a comptime-known flag so the default CPU build never analyses the
+// GPU dispatch layer — no fa_*_gpu kernel and no forCUDA fc_rt_* externs leak
+// into the lean CPU archive.
+const gpu_layer = struct {
+    const gpu_dispatch = @import("gpu_dispatch");
+
+    /// Batched EKF predict with GPU routing (fapo_ekf_predict_batch): routes
+    /// to forCUDA if a device is present and the batch is large enough;
+    /// used_gpu=1 on the GPU path, else 0 (caller falls back to CPU).
+    fn ekfPredictBatchGpu(
+        x: *anyopaque,
+        P: *anyopaque,
+        F: *anyopaque,
+        Q: *anyopaque,
+        n_filters: i32,
+        state_dim: i32,
+        used_gpu: *i32,
+    ) callconv(.c) void {
+        used_gpu.* = if (gpu_dispatch.tryEkfPredictBatch(x, P, F, Q, n_filters, state_dim)) 1 else 0;
+    }
+};
+
+comptime {
+    if (build_opts.gpu) {
+        @export(&gpu_layer.ekfPredictBatchGpu, .{
+            .name = "fapo_ekf_predict_batch",
+            .linkage = .strong,
+        });
+    }
+}
+
+// ============================================================================
 // Version
 // ============================================================================
 
 /// Returns the library version as a packed u32: 0xMMmmpp (major.minor.patch).
-pub export fn forapollo_version() callconv(.c) u32 {
+pub export fn fapo_version() callconv(.c) u32 {
     return 0x000100; // 0.1.0
 }
 
@@ -31,7 +71,7 @@ pub export fn forapollo_version() callconv(.c) u32 {
 // Dynamics
 // ============================================================================
 
-pub export fn forapollo_dynamics_dispatch(
+pub export fn fapo_dynamics_dispatch(
     model_id: i32,
     n: i32,
     x: [*]const f64,
@@ -50,7 +90,7 @@ pub export fn forapollo_dynamics_dispatch(
     dispatch.dynamicsDispatch(model_id, n, x, u, nu, t, params, np, x_dot, info);
 }
 
-pub export fn forapollo_dynamics_jacobian(
+pub export fn fapo_dynamics_jacobian(
     model_id: i32,
     n: i32,
     x: [*]const f64,
@@ -73,7 +113,7 @@ pub export fn forapollo_dynamics_jacobian(
 // Observation
 // ============================================================================
 
-pub export fn forapollo_observe_dispatch(
+pub export fn fapo_observe_dispatch(
     obs_id: i32,
     n: i32,
     x: [*]const f64,
@@ -91,7 +131,7 @@ pub export fn forapollo_observe_dispatch(
     dispatch.observeDispatch(obs_id, n, x, m, t, obs_params, nop, z_pred, info);
 }
 
-pub export fn forapollo_observe_jacobian(
+pub export fn fapo_observe_jacobian(
     obs_id: i32,
     n: i32,
     x: [*]const f64,
@@ -113,7 +153,7 @@ pub export fn forapollo_observe_jacobian(
 // Propagation
 // ============================================================================
 
-pub export fn forapollo_propagate(
+pub export fn fapo_propagate(
     n: i32,
     x: [*]f64,
     u: [*]const f64,
@@ -133,7 +173,7 @@ pub export fn forapollo_propagate(
     dispatch.propagate(n, x, u, nu, f_ptr, model_id, params, np, dt, n_steps, info);
 }
 
-pub export fn forapollo_propagate_stm(
+pub export fn fapo_propagate_stm(
     n: i32,
     x: [*]f64,
     phi: [*]f64,
@@ -155,7 +195,7 @@ pub export fn forapollo_propagate_stm(
     dispatch.propagateStm(n, x, phi, u, nu, f_ptr, df_ptr, model_id, params, np, dt, n_steps, info);
 }
 
-pub export fn forapollo_propagate_batch(
+pub export fn fapo_propagate_batch(
     n: i32,
     n_states: i32,
     x_batch: [*]f64,
@@ -184,7 +224,7 @@ pub export fn forapollo_propagate_batch(
 // Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_kf_predict(
+pub export fn fapo_kf_predict(
     n: i32,
     x: [*]f64,
     P: [*]f64,
@@ -199,7 +239,7 @@ pub export fn forapollo_kf_predict(
     dispatch.kfPredict(n, x, P, F, Q, info);
 }
 
-pub export fn forapollo_kf_update(
+pub export fn fapo_kf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -221,7 +261,7 @@ pub export fn forapollo_kf_update(
 // Extended Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_ekf_predict(
+pub export fn fapo_ekf_predict(
     n: i32,
     x: [*]f64,
     P: [*]f64,
@@ -242,7 +282,7 @@ pub export fn forapollo_ekf_predict(
     dispatch.ekfPredict(n, x, P, f_ptr, df_ptr, Q, dt, model_id, params, np, n_steps, info);
 }
 
-pub export fn forapollo_ekf_update(
+pub export fn fapo_ekf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -268,7 +308,7 @@ pub export fn forapollo_ekf_update(
 // Iterated Extended Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_iekf_update(
+pub export fn fapo_iekf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -296,7 +336,7 @@ pub export fn forapollo_iekf_update(
 // Unscented Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_ukf_predict(
+pub export fn fapo_ukf_predict(
     n: i32,
     x: [*]f64,
     P: [*]f64,
@@ -318,7 +358,7 @@ pub export fn forapollo_ukf_predict(
     dispatch.ukfPredict(n, x, P, f_ptr, model_id, params, np, Q, dt, alpha, beta_ukf, kappa, info);
 }
 
-pub export fn forapollo_ukf_update(
+pub export fn fapo_ukf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -346,7 +386,7 @@ pub export fn forapollo_ukf_update(
 // Error-State Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_eskf_predict(
+pub export fn fapo_eskf_predict(
     n: i32,
     x_nom: [*]f64,
     dx: [*]f64,
@@ -367,7 +407,7 @@ pub export fn forapollo_eskf_predict(
     dispatch.eskfPredict(n, x_nom, dx, P, f_ptr, model_id, params, np, Q, dt, n_steps, info);
 }
 
-pub export fn forapollo_eskf_update(
+pub export fn fapo_eskf_update(
     n: i32,
     m: i32,
     x_nom: [*]const f64,
@@ -390,7 +430,7 @@ pub export fn forapollo_eskf_update(
     dispatch.eskfUpdate(n, m, x_nom, dx, P, z, h_ptr, dh_ptr, obs_id, R, obs_params, nop, validity, info);
 }
 
-pub export fn forapollo_eskf_inject(
+pub export fn fapo_eskf_inject(
     n: i32,
     x_nom: [*]f64,
     dx: [*]f64,
@@ -408,7 +448,7 @@ pub export fn forapollo_eskf_inject(
 // Square-Root Extended Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_srekf_predict(
+pub export fn fapo_srekf_predict(
     n: i32,
     x: [*]f64,
     S: [*]f64,
@@ -429,7 +469,7 @@ pub export fn forapollo_srekf_predict(
     dispatch.srekfPredict(n, x, S, f_ptr, df_ptr, model_id, params, np, Sq, dt, n_steps, info);
 }
 
-pub export fn forapollo_srekf_update(
+pub export fn fapo_srekf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -455,7 +495,7 @@ pub export fn forapollo_srekf_update(
 // Square-Root Unscented Kalman Filter
 // ============================================================================
 
-pub export fn forapollo_srukf_predict(
+pub export fn fapo_srukf_predict(
     n: i32,
     x: [*]f64,
     S: [*]f64,
@@ -477,7 +517,7 @@ pub export fn forapollo_srukf_predict(
     dispatch.srukfPredict(n, x, S, f_ptr, model_id, params, np, Sq, dt, alpha, beta_ukf, kappa, info);
 }
 
-pub export fn forapollo_srukf_update(
+pub export fn fapo_srukf_update(
     n: i32,
     m: i32,
     x: [*]f64,
@@ -505,7 +545,7 @@ pub export fn forapollo_srukf_update(
 // Information Filter
 // ============================================================================
 
-pub export fn forapollo_if_predict(
+pub export fn fapo_if_predict(
     n: i32,
     eta: [*]f64,
     Ymat: [*]f64,
@@ -520,7 +560,7 @@ pub export fn forapollo_if_predict(
     dispatch.ifPredict(n, eta, Ymat, F, Q, info);
 }
 
-pub export fn forapollo_if_update(
+pub export fn fapo_if_update(
     n: i32,
     m: i32,
     eta: [*]f64,
@@ -542,7 +582,7 @@ pub export fn forapollo_if_update(
 // Particle Filter (SIR)
 // ============================================================================
 
-pub export fn forapollo_pf_sir_predict(
+pub export fn fapo_pf_sir_predict(
     n: i32,
     n_particles: i32,
     particles: [*]f64,
@@ -564,7 +604,7 @@ pub export fn forapollo_pf_sir_predict(
     dispatch.pfSirPredict(n, n_particles, particles, weights, f_ptr, model_id, params, np, Q, dt, n_steps, seed, info);
 }
 
-pub export fn forapollo_pf_sir_update(
+pub export fn fapo_pf_sir_update(
     n: i32,
     m: i32,
     n_particles: i32,
@@ -585,7 +625,7 @@ pub export fn forapollo_pf_sir_update(
     dispatch.pfSirUpdate(n, m, n_particles, particles, weights, z, h_ptr, obs_id, R, obs_params, nop, info);
 }
 
-pub export fn forapollo_pf_sir_resample(
+pub export fn fapo_pf_sir_resample(
     n: i32,
     n_particles: i32,
     particles: [*]f64,
@@ -600,7 +640,7 @@ pub export fn forapollo_pf_sir_resample(
     dispatch.pfSirResample(n, n_particles, particles, weights, seed, info);
 }
 
-pub export fn forapollo_pf_rb_update(
+pub export fn fapo_pf_rb_update(
     n: i32,
     m: i32,
     n_particles: i32,
@@ -626,7 +666,7 @@ pub export fn forapollo_pf_rb_update(
 // Smoothers
 // ============================================================================
 
-pub export fn forapollo_rts_smooth(
+pub export fn fapo_rts_smooth(
     n: i32,
     nsteps: i32,
     x_filt: [*]const f64,
@@ -645,7 +685,7 @@ pub export fn forapollo_rts_smooth(
     dispatch.rtsSmooth(n, nsteps, x_filt, P_filt, x_pred, P_pred, F_all, x_smooth, P_smooth, info);
 }
 
-pub export fn forapollo_urtss_smooth(
+pub export fn fapo_urtss_smooth(
     n: i32,
     nsteps: i32,
     x_filt: [*]const f64,
@@ -668,7 +708,7 @@ pub export fn forapollo_urtss_smooth(
 // Batch Estimators
 // ============================================================================
 
-pub export fn forapollo_batch_wls(
+pub export fn fapo_batch_wls(
     n: i32,
     m_total: i32,
     x: [*]f64,
@@ -686,7 +726,7 @@ pub export fn forapollo_batch_wls(
     dispatch.batchWls(n, m_total, x, z_all, H_all, R_all, max_iter, tol, info);
 }
 
-pub export fn forapollo_batch_map(
+pub export fn fapo_batch_map(
     n: i32,
     m_total: i32,
     x: [*]f64,
@@ -710,62 +750,95 @@ pub export fn forapollo_batch_map(
 // Guidance
 // ============================================================================
 
-pub export fn forapollo_guidance_zem(n: i32, x: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_zem(n: i32, x: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceZem(n, x, t_go, g, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_zev(n: i32, x: [*]const f64, v_target: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_zev(n: i32, x: [*]const f64, v_target: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceZev(n, x, v_target, t_go, g, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_eguidance(n: i32, x: [*]const f64, x_target: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_eguidance(n: i32, x: [*]const f64, x_target: [*]const f64, t_go: f64, g: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceEguidance(n, x, x_target, t_go, g, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_pn_pure(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_pn_pure(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidancePnPure(n, x_p, x_t, N_gain, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_pn_aug(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_target: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_pn_aug(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_target: [*]const f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidancePnAug(n, x_p, x_t, N_gain, a_target, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_pn_true(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_pn_true(n: i32, x_p: [*]const f64, x_t: [*]const f64, N_gain: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidancePnTrue(n, x_p, x_t, N_gain, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_lambert(r1: [*]const f64, r2: [*]const f64, tof: f64, mu: f64, v1: [*]f64, v2: [*]f64, n_rev: i32, info: *i32) callconv(.c) void {
-    if (tof <= 0.0 or mu <= 0.0) { info.* = 3; return; }
+pub export fn fapo_guidance_lambert(r1: [*]const f64, r2: [*]const f64, tof: f64, mu: f64, v1: [*]f64, v2: [*]f64, n_rev: i32, info: *i32) callconv(.c) void {
+    if (tof <= 0.0 or mu <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceLambert(r1, r2, tof, mu, v1, v2, n_rev, info);
 }
 
-pub export fn forapollo_guidance_lqr(n: i32, m: i32, A: [*]const f64, B: [*]const f64, Q_cost: [*]const f64, R_cost: [*]const f64, x: [*]const f64, u_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n <= 0 or m <= 0) { info.* = 3; return; }
+pub export fn fapo_guidance_lqr(n: i32, m: i32, A: [*]const f64, B: [*]const f64, Q_cost: [*]const f64, R_cost: [*]const f64, x: [*]const f64, u_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceLqr(n, m, A, B, Q_cost, R_cost, x, u_cmd, info);
 }
 
-pub export fn forapollo_guidance_pure_pursuit(x_pos: [*]const f64, x_lookahead: [*]const f64, L_wheelbase: f64, steer_cmd: *f64, info: *i32) callconv(.c) void {
-    if (L_wheelbase <= 0.0) { info.* = 3; return; }
+pub export fn fapo_guidance_pure_pursuit(x_pos: [*]const f64, x_lookahead: [*]const f64, L_wheelbase: f64, steer_cmd: *f64, info: *i32) callconv(.c) void {
+    if (L_wheelbase <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidancePurePursuit(x_pos, x_lookahead, L_wheelbase, steer_cmd, info);
 }
 
-pub export fn forapollo_guidance_stanley(x_pos: [*]const f64, path_point: [*]const f64, path_heading: f64, v: f64, k_gain: f64, steer_cmd: *f64, info: *i32) callconv(.c) void {
+pub export fn fapo_guidance_stanley(x_pos: [*]const f64, path_point: [*]const f64, path_heading: f64, v: f64, k_gain: f64, steer_cmd: *f64, info: *i32) callconv(.c) void {
     dispatch.guidanceStanley(x_pos, path_point, path_heading, v, k_gain, steer_cmd, info);
 }
 
-pub export fn forapollo_guidance_traj_track(n: i32, x: [*]const f64, x_ref: [*]const f64, v_ref: [*]const f64, K_pos: f64, K_vel: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_traj_track(n: i32, x: [*]const f64, x_ref: [*]const f64, v_ref: [*]const f64, K_pos: f64, K_vel: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceTrajTrack(n, x, x_ref, v_ref, K_pos, K_vel, a_cmd, info);
 }
 
-pub export fn forapollo_guidance_min_energy(n: i32, x: [*]const f64, x_target: [*]const f64, t_go: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
-    if (n < 6) { info.* = 3; return; }
+pub export fn fapo_guidance_min_energy(n: i32, x: [*]const f64, x_target: [*]const f64, t_go: f64, a_cmd: [*]f64, info: *i32) callconv(.c) void {
+    if (n < 6) {
+        info.* = 3;
+        return;
+    }
     dispatch.guidanceMinEnergy(n, x, x_target, t_go, a_cmd, info);
 }
 
@@ -773,36 +846,51 @@ pub export fn forapollo_guidance_min_energy(n: i32, x: [*]const f64, x_target: [
 // Coordinates
 // ============================================================================
 
-pub export fn forapollo_coords_transform(from_id: i32, to_id: i32, n: i32, x_in: [*]const f64, x_out: [*]f64, t: f64, params: [*]const f64, np: i32, info: *i32) callconv(.c) void {
-    if (n < 3) { info.* = 3; return; }
+pub export fn fapo_coords_transform(from_id: i32, to_id: i32, n: i32, x_in: [*]const f64, x_out: [*]f64, t: f64, params: [*]const f64, np: i32, info: *i32) callconv(.c) void {
+    if (n < 3) {
+        info.* = 3;
+        return;
+    }
     dispatch.coordsTransform(from_id, to_id, n, x_in, x_out, t, params, np, info);
 }
 
-pub export fn forapollo_coords_eci_to_ecef(x_eci: [*]const f64, x_ecef: [*]f64, gmst: f64, info: *i32) callconv(.c) void {
+pub export fn fapo_coords_eci_to_ecef(x_eci: [*]const f64, x_ecef: [*]f64, gmst: f64, info: *i32) callconv(.c) void {
     dispatch.coordsEciToEcef(x_eci, x_ecef, gmst, info);
 }
 
-pub export fn forapollo_coords_ecef_to_eci(x_ecef: [*]const f64, x_eci: [*]f64, gmst: f64, info: *i32) callconv(.c) void {
+pub export fn fapo_coords_ecef_to_eci(x_ecef: [*]const f64, x_eci: [*]f64, gmst: f64, info: *i32) callconv(.c) void {
     dispatch.coordsEcefToEci(x_ecef, x_eci, gmst, info);
 }
 
-pub export fn forapollo_coords_ecef_to_geodetic(x_ecef: [*]const f64, lat: *f64, lon: *f64, alt: *f64, a_body: f64, f_body: f64, info: *i32) callconv(.c) void {
-    if (a_body <= 0.0) { info.* = 3; return; }
+pub export fn fapo_coords_ecef_to_geodetic(x_ecef: [*]const f64, lat: *f64, lon: *f64, alt: *f64, a_body: f64, f_body: f64, info: *i32) callconv(.c) void {
+    if (a_body <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.coordsEcefToGeodetic(x_ecef, lat, lon, alt, a_body, f_body, info);
 }
 
-pub export fn forapollo_coords_geodetic_to_ecef(lat: f64, lon: f64, alt: f64, x_ecef: [*]f64, a_body: f64, f_body: f64, info: *i32) callconv(.c) void {
-    if (a_body <= 0.0) { info.* = 3; return; }
+pub export fn fapo_coords_geodetic_to_ecef(lat: f64, lon: f64, alt: f64, x_ecef: [*]f64, a_body: f64, f_body: f64, info: *i32) callconv(.c) void {
+    if (a_body <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.coordsGeodeticToEcef(lat, lon, alt, x_ecef, a_body, f_body, info);
 }
 
-pub export fn forapollo_coords_cart_to_keplerian(rv: [*]const f64, mu: f64, oe: [*]f64, info: *i32) callconv(.c) void {
-    if (mu <= 0.0) { info.* = 3; return; }
+pub export fn fapo_coords_cart_to_keplerian(rv: [*]const f64, mu: f64, oe: [*]f64, info: *i32) callconv(.c) void {
+    if (mu <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.coordsCartToKeplerian(rv, mu, oe, info);
 }
 
-pub export fn forapollo_coords_keplerian_to_cart(oe: [*]const f64, mu: f64, rv: [*]f64, info: *i32) callconv(.c) void {
-    if (mu <= 0.0) { info.* = 3; return; }
+pub export fn fapo_coords_keplerian_to_cart(oe: [*]const f64, mu: f64, rv: [*]f64, info: *i32) callconv(.c) void {
+    if (mu <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.coordsKeplerianToCart(oe, mu, rv, info);
 }
 
@@ -810,27 +898,39 @@ pub export fn forapollo_coords_keplerian_to_cart(oe: [*]const f64, mu: f64, rv: 
 // Astrodynamics
 // ============================================================================
 
-pub export fn forapollo_astro_kepler_solve(mean_anom: f64, ecc: f64, ecc_anom: *f64, info: *i32) callconv(.c) void {
-    if (ecc < 0.0 or ecc >= 1.0) { info.* = 3; return; }
+pub export fn fapo_astro_kepler_solve(mean_anom: f64, ecc: f64, ecc_anom: *f64, info: *i32) callconv(.c) void {
+    if (ecc < 0.0 or ecc >= 1.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.astroKeplerSolve(mean_anom, ecc, ecc_anom, info);
 }
 
-pub export fn forapollo_astro_vis_viva(r: f64, a: f64, mu: f64, v: *f64, info: *i32) callconv(.c) void {
-    if (r <= 0.0 or mu <= 0.0) { info.* = 3; return; }
+pub export fn fapo_astro_vis_viva(r: f64, a: f64, mu: f64, v: *f64, info: *i32) callconv(.c) void {
+    if (r <= 0.0 or mu <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.astroVisViva(r, a, mu, v, info);
 }
 
-pub export fn forapollo_astro_period(a: f64, mu: f64, T: *f64, info: *i32) callconv(.c) void {
-    if (a <= 0.0 or mu <= 0.0) { info.* = 3; return; }
+pub export fn fapo_astro_period(a: f64, mu: f64, T: *f64, info: *i32) callconv(.c) void {
+    if (a <= 0.0 or mu <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.astroPeriod(a, mu, T, info);
 }
 
-pub export fn forapollo_astro_hohmann(r1: f64, r2: f64, mu: f64, dv1: *f64, dv2: *f64, tof: *f64, info: *i32) callconv(.c) void {
-    if (r1 <= 0.0 or r2 <= 0.0 or mu <= 0.0) { info.* = 3; return; }
+pub export fn fapo_astro_hohmann(r1: f64, r2: f64, mu: f64, dv1: *f64, dv2: *f64, tof: *f64, info: *i32) callconv(.c) void {
+    if (r1 <= 0.0 or r2 <= 0.0 or mu <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.astroHohmann(r1, r2, mu, dv1, dv2, tof, info);
 }
 
-pub export fn forapollo_astro_planetary_mu(body_id: i32, mu: *f64, info: *i32) callconv(.c) void {
+pub export fn fapo_astro_planetary_mu(body_id: i32, mu: *f64, info: *i32) callconv(.c) void {
     dispatch.astroPlanetaryMu(body_id, mu, info);
 }
 
@@ -838,18 +938,27 @@ pub export fn forapollo_astro_planetary_mu(body_id: i32, mu: *f64, info: *i32) c
 // Environment
 // ============================================================================
 
-pub export fn forapollo_environ_atmosphere_us76(h: f64, rho: *f64, T_atm: *f64, p_atm: *f64, info: *i32) callconv(.c) void {
-    if (h < 0.0 or h > 86.0) { info.* = 3; return; }
+pub export fn fapo_environ_atmosphere_us76(h: f64, rho: *f64, T_atm: *f64, p_atm: *f64, info: *i32) callconv(.c) void {
+    if (h < 0.0 or h > 86.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.environAtmosphereUs76(h, rho, T_atm, p_atm, info);
 }
 
-pub export fn forapollo_environ_gravity_j2(r_vec: [*]const f64, mu: f64, J2: f64, R_eq: f64, g_vec: [*]f64, info: *i32) callconv(.c) void {
-    if (mu <= 0.0 or R_eq <= 0.0) { info.* = 3; return; }
+pub export fn fapo_environ_gravity_j2(r_vec: [*]const f64, mu: f64, J2: f64, R_eq: f64, g_vec: [*]f64, info: *i32) callconv(.c) void {
+    if (mu <= 0.0 or R_eq <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.environGravityJ2(r_vec, mu, J2, R_eq, g_vec, info);
 }
 
-pub export fn forapollo_environ_geodesic_vincenty(lat1: f64, lon1: f64, lat2: f64, lon2: f64, a_body: f64, f_body: f64, dist: *f64, az1: *f64, az2: *f64, info: *i32) callconv(.c) void {
-    if (a_body <= 0.0) { info.* = 3; return; }
+pub export fn fapo_environ_geodesic_vincenty(lat1: f64, lon1: f64, lat2: f64, lon2: f64, a_body: f64, f_body: f64, dist: *f64, az1: *f64, az2: *f64, info: *i32) callconv(.c) void {
+    if (a_body <= 0.0) {
+        info.* = 3;
+        return;
+    }
     dispatch.environGeodesicVincenty(lat1, lon1, lat2, lon2, a_body, f_body, dist, az1, az2, info);
 }
 
@@ -857,14 +966,14 @@ pub export fn forapollo_environ_geodesic_vincenty(lat1: f64, lon1: f64, lat2: f6
 // Time
 // ============================================================================
 
-pub export fn forapollo_time_gmst(ut1_jd: f64, gmst_rad: *f64, info: *i32) callconv(.c) void {
+pub export fn fapo_time_gmst(ut1_jd: f64, gmst_rad: *f64, info: *i32) callconv(.c) void {
     dispatch.timeGmst(ut1_jd, gmst_rad, info);
 }
 
-pub export fn forapollo_time_cal_to_jd(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64, jd: *f64, info: *i32) callconv(.c) void {
+pub export fn fapo_time_cal_to_jd(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64, jd: *f64, info: *i32) callconv(.c) void {
     dispatch.timeCalToJd(year, month, day, hour, minute, second, jd, info);
 }
 
-pub export fn forapollo_time_utc_to_tai(utc_jd: f64, tai_jd: *f64, info: *i32) callconv(.c) void {
+pub export fn fapo_time_utc_to_tai(utc_jd: f64, tai_jd: *f64, info: *i32) callconv(.c) void {
     dispatch.timeUtcToTai(utc_jd, tai_jd, info);
 }
