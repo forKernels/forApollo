@@ -1,12 +1,13 @@
 // forApollo — Zig Build System (Stage 2)
 // Copyright The Fantastic Planet — By David Clabaugh
 //
-// Per FORKERNELS_BUILD_STANDARD:
-//   - Output: zig-out/{target}/lib/libforapollo.a
-//   - Targets: linux-arm64, linux-x86_64, macos-arm64, windows-x86_64
-//   - Sibling resolution: prebuilt/{target}/lib/ -> ../sibling/zig-out/{target}/lib/
-//     -> ../sibling/zig-out/lib/ (fallback)
-//   - Prefix: forapollo_
+// Per FORKERNELS_BUILD_STANDARD (CANON 2026-06-19):
+//   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
+//   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
+//   - Sibling resolution: ../sibling/prebuilt/<branch>/
+//   - Public C-ABI prefix: fapo_ (Zig exports, sole public surface; short-prefix
+//     canon 2026-07-02, forapollo_ retired); fa_ is the INTERNAL Fortran bind(C)
+//     prefix — internalized by tools/wrap.zig
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
 // Stage 2: This file links Fortran objects + deps -> static + shared libraries
@@ -138,14 +139,14 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseFast — Debug materializes 'undefined' as real bytes and shipped a 68MB forCV archive)") orelse .ReleaseFast;
     const target_name = getTargetName(target.result);
 
-    // Canonical delivery: prebuilt/<short>/lib<name>.a — see
-    // ../forMath/docs/DELIVERY.md.
-    b.install_path = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
+    // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
+    // <branch> = macos | thor | linX86 | winX86. Short names, NO lib/ segment.
+    b.install_path = b.pathFromRoot("prebuilt");
     b.install_prefix = b.install_path;
-    b.lib_dir = b.install_path;
+    b.lib_dir = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
 
     // -----------------------------------------------------------------------
     // Build options
@@ -163,10 +164,23 @@ pub fn build(b: *std.Build) void {
         "Enable debug assertions and verbose logging",
     ) orelse false;
 
+    // GPU (Thor/Blackwell) kernels are an opt-in extra. They require nvfortran +
+    // CUDA runtime and pull undefined CUDA symbols into the archive, which breaks
+    // the lean, self-contained CPU delivery. Default OFF; the canonical
+    // prebuilt/<branch>/libforapollo.a is CPU-only. fa_ekf_predict_batch_gpu is
+    // not referenced by the Zig public ABI, so omitting it leaves no unresolved
+    // forapollo_/fa_ symbols.
+    const gpu = b.option(
+        bool,
+        "gpu",
+        "Compile and bundle nvfortran CUDA kernels (Thor/Blackwell, opt-in)",
+    ) orelse false;
+
     // Build-time options passed into Zig source
     const build_opts = b.addOptions();
     build_opts.addOption(bool, "dev", dev);
     build_opts.addOption(bool, "use_prebuilt", use_prebuilt);
+    build_opts.addOption(bool, "gpu", gpu);
 
     // -----------------------------------------------------------------------
     // Resolve Fortran archive path (per-target)
@@ -181,58 +195,79 @@ pub fn build(b: *std.Build) void {
     // Stage 1: Build Fortran kernels via make (if not using prebuilt)
     // -----------------------------------------------------------------------
 
-    const make_step = b.addSystemCommand(&.{ "make", "lib" });
+    // Pass TARGET so Stage 1 (Makefile) writes its per-target Fortran objects to
+    // the same dir Stage 2 reads (prebuilt/<target>/obj) — even when cross-
+    // compiling (-Dtarget=...). All 4 targets build without clobbering.
+    const make_step = b.addSystemCommand(&.{ "make", "lib", b.fmt("TARGET={s}", .{target_name}) });
 
     // -----------------------------------------------------------------------
-    // Static library: libforapollo.a (Zig-only, no external linking)
+    // Static library: libforapollo.a — assembled by tools/wrap.zig.
+    // Zig exports object + this repo's Fortran .o are dup/MOD-localized,
+    // ld -r combined, then EVERYTHING except fapo_* is internalized
+    // (fa_* is internal-only per the wiring contract — the wrap enforces it
+    // with a gate that fails the build on any leak). Sibling deps (forMath,
+    // forCUDA, ...) remain external per the no-bundled-deps canon.
     // -----------------------------------------------------------------------
+
+    // GPU dispatch layer (zig/src/*) is a separate module tree. Expose it under
+    // the name "gpu_dispatch" so exports.zig can pull it in via @import without
+    // crossing module-path boundaries. Lazily analyzed: only referenced under
+    // -Dgpu, so the default CPU build never code-gens it (stays lean).
+    const gpu_dispatch_mod = b.createModule(.{
+        .root_source_file = b.path("zig/src/gpu_dispatch.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     root_module.addOptions("build_opts", build_opts);
+    root_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
-    const static_lib = b.addLibrary(.{
-        .linkage = .static,
-        .name = "forapollo",
+    const exports_obj = b.addObject(.{
+        .name = "forapollo_exports",
         .root_module = root_module,
     });
-    static_lib.linkLibC();
 
-    if (!use_prebuilt) {
-        static_lib.step.dependOn(&make_step.step);
-    }
+    const wrap_exe = b.addExecutable(.{
+        .name = "forapollo-wrap",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/wrap.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
 
-    // Bundle forApollo's own Fortran kernels so libforapollo.a is a
-    // self-contained "Zig wraps Fortran" delivery. Sibling deps
-    // (forMath, forBayes, forCUDA, ...) remain external per the
-    // no-bundled-deps canon — consumers link those separately.
-    //
-    // NOTE: bundled as individual .o files — addObjectFile on a .a would
-    // embed libforapollo_fortran.a whole as a nested archive member, which
-    // downstream linkers reject (same failure mode as forFFT/forMath packs).
-    // Shared lib + tests still link the archive (correct for final links).
-    const fortran_obj_dir: []const u8 = if (use_prebuilt)
-        b.fmt("prebuilt/{s}/obj", .{target_name})
-    else
-        "build/obj";
+    const wrap_run = b.addRunArtifact(wrap_exe);
+    wrap_run.has_side_effects = true; // writes prebuilt/<target>/libforapollo.a
+    wrap_run.addArg(b.pathFromRoot(b.fmt("prebuilt/{s}/libforapollo.a", .{target_name})));
+    wrap_run.addArg(b.pathFromRoot(b.fmt(".zig-cache/wrap/{s}", .{target_name})));
+    wrap_run.addArg("*fapo_*");
+    wrap_run.addFileArg(exports_obj.getEmittedBin());
+
+    // Fortran objects always live at prebuilt/<target>/obj — the Makefile
+    // (Stage 1) writes them there per-target, so the make-output path always
+    // equals this Stage-2 read path for the SAME target.
+    const fortran_obj_dir = b.fmt("prebuilt/{s}/obj", .{target_name});
     const fortran_kernel_basenames = [_][]const u8{
         "forapollo_dynamics", "forapollo_observe",  "forapollo_estimate",
         "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
         "forapollo_astro",     "forapollo_environ",  "forapollo_time",
     };
     for (fortran_kernel_basenames) |name| {
-        static_lib.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }) });
+        wrap_run.addArg(b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name })));
     }
 
-    {
-        const install = b.addInstallArtifact(static_lib, .{
-        });
+    if (!use_prebuilt) {
+        wrap_run.step.dependOn(&make_step.step);
+    }
 
-    // Compile GPU kernels via nvfortran (conditional — Thor/Blackwell only)
-    if (target.result.cpu.arch == .aarch64 and target.result.os.tag == .linux) {
+    // Compile GPU kernels via nvfortran (opt-in via -Dgpu, Thor/Blackwell only)
+    if (gpu and target.result.cpu.arch == .aarch64 and target.result.os.tag == .linux) {
         const nvfortran_path = "/opt/nvidia/hpc_sdk/Linux_aarch64/26.3/compilers/bin/nvfortran";
         const repo_gpu_sources = [_][]const u8{  "forapollo_ekf_batch_gpu", };
         for (repo_gpu_sources) |gpu_src| {
@@ -242,13 +277,13 @@ pub fn build(b: *std.Build) void {
             compile.addFileArg(b.path(b.fmt("src/gpu/{s}.cuf", .{gpu_src})));
             compile.addArg("-o");
             const obj = compile.addOutputFileArg(b.fmt("{s}.o", .{gpu_src}));
-            static_lib.root_module.addObjectFile(obj);
-            static_lib.step.dependOn(&compile.step);
+            wrap_run.addFileArg(obj);
         }
+        // forCUDA runtime (fc_rt_*) stays an undefined ref in the archive;
+        // the consumer's final link resolves it (no-bundled-deps canon).
     }
 
-        b.getInstallStep().dependOn(&install.step);
-    }
+    b.getInstallStep().dependOn(&wrap_run.step);
 
     // -----------------------------------------------------------------------
     // Shared library: zig build shared  (links Fortran + all deps)
@@ -262,6 +297,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         shared_module.addOptions("build_opts", build_opts);
+        shared_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
         const shared_lib = b.addLibrary(.{
             .linkage = .dynamic,
@@ -290,6 +326,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_module.addOptions("build_opts", build_opts);
+    test_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
     const unit_tests = b.addTest(.{
         .root_module = test_module,

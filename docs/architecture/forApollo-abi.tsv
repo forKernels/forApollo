@@ -1,0 +1,63 @@
+symbol	group	signature	backing	abi_owner	status
+forapollo_version	library	() -> u32	fortran:fa_version	zig-export	ok
+forapollo_kf_predict	estimate	(i32 n, f64* x, f64* P, f64* F, f64* Q, i32* info) -> void	fortran:fa_kf_predict	zig-export	ok
+forapollo_kf_update	estimate	(i32 n, i32 m, f64* x, f64* P, f64* z, f64* H, f64* R, i32* validity, i32* info) -> void	fortran:fa_kf_update	zig-export	ok
+forapollo_ekf_predict	estimate	(i32 n, f64* x, f64* P, ptr f_ptr, ptr df_ptr, f64* Q, f64 dt, i32 model_id, f64* params, i32 np, i32 n_steps, i32* info) -> void	fortran:fa_ekf_predict	zig-export	ok
+forapollo_ekf_update	estimate	(i32 n, i32 m, f64* x, f64* P, f64* z, ptr h_ptr, ptr dh_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, i32* validity, i32* info) -> void	fortran:fa_ekf_update	zig-export	ok
+forapollo_iekf_update	estimate	(i32 n, i32 m, f64* x, f64* P, f64* z, ptr h_ptr, ptr dh_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, i32 max_iter, f64 tol, i32* validity, i32* info) -> void	fortran:fa_iekf_update	zig-export	ok
+forapollo_ukf_predict	estimate	(i32 n, f64* x, f64* P, ptr f_ptr, i32 model_id, f64* params, i32 np, f64* Q, f64 dt, f64 alpha, f64 beta, f64 kappa, i32* info) -> void	fortran:fa_ukf_predict	zig-export	ok
+forapollo_ukf_update	estimate	(i32 n, i32 m, f64* x, f64* P, f64* z, ptr h_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, f64 alpha, f64 beta, f64 kappa, i32* validity, i32* info) -> void	fortran:fa_ukf_update	zig-export	ok
+forapollo_eskf_predict	estimate	(i32 n, f64* x_nom, f64* dx, f64* P, ptr f_ptr, i32 model_id, f64* params, i32 np, f64* Q, f64 dt, i32 n_steps, i32* info) -> void	fortran:fa_eskf_predict	zig-export	ok
+forapollo_eskf_update	estimate	(i32 n, i32 m, f64* x_nom, f64* dx, f64* P, f64* z, ptr h_ptr, ptr dh_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, i32* validity, i32* info) -> void	fortran:fa_eskf_update	zig-export	ok
+forapollo_eskf_inject	estimate	(i32 n, f64* x_nom, f64* dx, f64* P, i32* info) -> void	fortran:fa_eskf_inject	zig-export	ok
+forapollo_srekf_predict	estimate	(i32 n, f64* x, f64* S, ptr f_ptr, ptr df_ptr, i32 model_id, f64* params, i32 np, f64* Sq, f64 dt, i32 n_steps, i32* info) -> void	fortran:fa_srekf_predict	zig-export	ok
+forapollo_srekf_update	estimate	(i32 n, i32 m, f64* x, f64* S, f64* z, ptr h_ptr, ptr dh_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, i32* validity, i32* info) -> void	fortran:fa_srekf_update	zig-export	ok
+forapollo_srukf_predict	estimate	(i32 n, f64* x, f64* S, ptr f_ptr, i32 model_id, f64* params, i32 np, f64* Sq, f64 dt, f64 alpha, f64 beta, f64 kappa, i32* info) -> void	fortran:fa_srukf_predict	zig-export	ok
+forapollo_srukf_update	estimate	(i32 n, i32 m, f64* x, f64* S, f64* z, ptr h_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, f64 alpha, f64 beta, f64 kappa, i32* validity, i32* info) -> void	fortran:fa_srukf_update	zig-export	ok
+forapollo_if_predict	estimate	(i32 n, f64* eta, f64* Y, f64* F, f64* Q, i32* info) -> void	fortran:fa_if_predict	zig-export	ok
+forapollo_if_update	estimate	(i32 n, i32 m, f64* eta, f64* Y, f64* z, f64* H, f64* R, i32* validity, i32* info) -> void	fortran:fa_if_update	zig-export	ok
+forapollo_pf_sir_predict	estimate	(i32 n, i32 np_particles, f64* particles, f64* weights, ptr f_ptr, i32 model_id, f64* params, i32 np, f64* Q, f64 dt, i32 n_steps, i32* seed, i32* info) -> void	fortran:fa_pf_sir_predict	zig-export	ok
+forapollo_pf_sir_update	estimate	(i32 n, i32 m, i32 np_particles, f64* particles, f64* weights, f64* z, ptr h_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, i32* info) -> void	fortran:fa_pf_sir_update	zig-export	ok
+forapollo_pf_sir_resample	estimate	(i32 n, i32 np_particles, f64* particles, f64* weights, i32* seed, i32* info) -> void	fortran:fa_pf_sir_resample	zig-export	ok
+forapollo_pf_rb_update	estimate	(i32 n, i32 m, i32 np_particles, i32 n_linear, f64* particles, f64* weights, f64* z, ptr h_ptr, i32 obs_id, f64* R, f64* obs_params, i32 nop, i32* info) -> void	fortran:fa_pf_rb_update	zig-export	ok
+forapollo_rts_smooth	estimate	(i32 n, i32 nsteps, f64* x_filt, f64* P_filt, f64* x_pred, f64* P_pred, f64* F_all, f64* x_smooth, f64* P_smooth, i32* info) -> void	fortran:fa_rts_smooth	zig-export	ok
+forapollo_urtss_smooth	estimate	(i32 n, i32 nsteps, f64* x_filt, f64* P_filt, f64* x_pred, f64* P_pred, f64* F_all, f64* x_smooth, f64* P_smooth, i32* info) -> void	fortran:fa_urtss_smooth	zig-export	ok
+forapollo_batch_wls	estimate	(i32 n, i32 m_total, f64* x, f64* z_all, f64* H_all, f64* R_all, i32 max_iter, f64 tol, i32* info) -> void	fortran:fa_batch_wls	zig-export	ok
+forapollo_batch_map	estimate	(i32 n, i32 m_total, f64* x, f64* x0, f64* P0, f64* z_all, f64* H_all, f64* R_all, i32 max_iter, f64 tol, i32* info) -> void	fortran:fa_batch_map	zig-export	ok
+forapollo_propagate	propagate	(i32 n, f64* x, f64* u, i32 nu, ptr f_ptr, i32 model_id, f64* params, i32 np, f64 dt, i32 n_steps, i32* info) -> void	fortran:fa_propagate	zig-export	ok
+forapollo_propagate_stm	propagate	(i32 n, f64* x, f64* phi, f64* u, i32 nu, ptr f_ptr, ptr df_ptr, i32 model_id, f64* params, i32 np, f64 dt, i32 n_steps, i32* info) -> void	fortran:fa_propagate_stm	zig-export	ok
+forapollo_propagate_batch	propagate	(i32 n, i32 n_states, f64* x_batch, f64* u, i32 nu, ptr f_ptr, i32 model_id, f64* params, i32 np, f64 dt, i32 n_steps, i32* info_batch) -> void	fortran:fa_propagate_batch	zig-export	ok
+forapollo_dynamics_dispatch	models	(i32 model_id, i32 n, f64* x, f64* u, i32 nu, f64 t, f64* params, i32 np, f64* x_dot, i32* info) -> void	fortran:fa_dynamics_dispatch	zig-export	ok
+forapollo_dynamics_jacobian	models	(i32 model_id, i32 n, f64* x, f64* u, i32 nu, f64 t, f64* params, i32 np, f64* F, i32* info) -> void	fortran:fa_dynamics_jacobian	zig-export	ok
+forapollo_observe_dispatch	models	(i32 obs_id, i32 n, f64* x, i32 m, f64 t, f64* obs_params, i32 nop, f64* z_pred, i32* info) -> void	fortran:fa_observe_dispatch	zig-export	ok
+forapollo_observe_jacobian	models	(i32 obs_id, i32 n, f64* x, i32 m, f64 t, f64* obs_params, i32 nop, f64* H, i32* info) -> void	fortran:fa_observe_jacobian	zig-export	ok
+forapollo_guidance_zem	guidance	(i32 n, f64* x, f64 t_go, f64* g, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_zem	zig-export	ok
+forapollo_guidance_zev	guidance	(i32 n, f64* x, f64* v_target, f64 t_go, f64* g, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_zev	zig-export	ok
+forapollo_guidance_eguidance	guidance	(i32 n, f64* x, f64* x_target, f64 t_go, f64* g, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_eguidance	zig-export	ok
+forapollo_guidance_pn_pure	guidance	(i32 n, f64* x_p, f64* x_t, f64 N, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_pn_pure	zig-export	ok
+forapollo_guidance_pn_aug	guidance	(i32 n, f64* x_p, f64* x_t, f64 N, f64* a_target, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_pn_aug	zig-export	ok
+forapollo_guidance_pn_true	guidance	(i32 n, f64* x_p, f64* x_t, f64 N, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_pn_true	zig-export	ok
+forapollo_guidance_lambert	guidance	(f64* r1, f64* r2, f64 tof, f64 mu, f64* v1, f64* v2, i32 n_rev, i32* info) -> void	fortran:fa_guidance_lambert	zig-export	ok
+forapollo_guidance_lqr	guidance	(i32 n, i32 m, f64* A, f64* B, f64* Q_cost, f64* R_cost, f64* x, f64* u_cmd, i32* info) -> void	fortran:fa_guidance_lqr	zig-export	ok
+forapollo_guidance_pure_pursuit	guidance	(f64* x_pos, f64* x_lookahead, f64 L, f64* steer_cmd, i32* info) -> void	fortran:fa_guidance_pure_pursuit	zig-export	ok
+forapollo_guidance_stanley	guidance	(f64* x_pos, f64* path_point, f64 path_heading, f64 v, f64 k, f64* steer_cmd, i32* info) -> void	fortran:fa_guidance_stanley	zig-export	ok
+forapollo_guidance_traj_track	guidance	(i32 n, f64* x, f64* x_ref, f64* v_ref, f64 K_pos, f64 K_vel, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_traj_track	zig-export	ok
+forapollo_guidance_min_energy	guidance	(i32 n, f64* x, f64* x_target, f64 t_go, f64* a_cmd, i32* info) -> void	fortran:fa_guidance_min_energy	zig-export	ok
+forapollo_coords_transform	coords	(i32 from_id, i32 to_id, i32 n, f64* x_in, f64* x_out, f64 t, f64* params, i32 np, i32* info) -> void	fortran:fa_coords_transform	zig-export	ok
+forapollo_coords_eci_to_ecef	coords	(f64* x_eci, f64* x_ecef, f64 gmst, i32* info) -> void	fortran:fa_coords_eci_to_ecef	zig-export	ok
+forapollo_coords_ecef_to_eci	coords	(f64* x_ecef, f64* x_eci, f64 gmst, i32* info) -> void	fortran:fa_coords_ecef_to_eci	zig-export	ok
+forapollo_coords_ecef_to_geodetic	coords	(f64* x_ecef, f64* lat, f64* lon, f64* alt, f64 a, f64 f, i32* info) -> void	fortran:fa_coords_ecef_to_geodetic	zig-export	ok
+forapollo_coords_geodetic_to_ecef	coords	(f64 lat, f64 lon, f64 alt, f64* x_ecef, f64 a, f64 f, i32* info) -> void	fortran:fa_coords_geodetic_to_ecef	zig-export	ok
+forapollo_coords_cart_to_keplerian	coords	(f64* rv, f64 mu, f64* oe, i32* info) -> void	fortran:fa_coords_cart_to_keplerian	zig-export	ok
+forapollo_coords_keplerian_to_cart	coords	(f64* oe, f64 mu, f64* rv, i32* info) -> void	fortran:fa_coords_keplerian_to_cart	zig-export	ok
+forapollo_astro_kepler_solve	orbital	(f64 mean_anom, f64 ecc, f64* ecc_anom, i32* info) -> void	fortran:fa_astro_kepler_solve	zig-export	ok
+forapollo_astro_vis_viva	orbital	(f64 r, f64 a, f64 mu, f64* v, i32* info) -> void	fortran:fa_astro_vis_viva	zig-export	ok
+forapollo_astro_period	orbital	(f64 a, f64 mu, f64* T, i32* info) -> void	fortran:fa_astro_period	zig-export	ok
+forapollo_astro_hohmann	orbital	(f64 r1, f64 r2, f64 mu, f64* dv1, f64* dv2, f64* tof, i32* info) -> void	fortran:fa_astro_hohmann	zig-export	ok
+forapollo_astro_planetary_mu	orbital	(i32 body_id, f64* mu, i32* info) -> void	fortran:fa_astro_planetary_mu	zig-export	ok
+forapollo_environ_atmosphere_us76	ephemeris	(f64 h, f64* rho, f64* T, f64* p, i32* info) -> void	fortran:fa_environ_atmosphere_us76	zig-export	ok
+forapollo_environ_gravity_j2	ephemeris	(f64* r_vec, f64 mu, f64 J2, f64 R_eq, f64* g_vec, i32* info) -> void	fortran:fa_environ_gravity_j2	zig-export	ok
+forapollo_environ_geodesic_vincenty	ephemeris	(f64 lat1, f64 lon1, f64 lat2, f64 lon2, f64 a, f64 f, f64* dist, f64* az1, f64* az2, i32* info) -> void	fortran:fa_environ_geodesic_vincenty	zig-export	ok
+forapollo_time_gmst	ephemeris	(f64 ut1_jd, f64* gmst_rad, i32* info) -> void	fortran:fa_time_gmst	zig-export	ok
+forapollo_time_cal_to_jd	ephemeris	(i32 year, i32 month, i32 day, i32 hour, i32 minute, f64 second, f64* jd, i32* info) -> void	fortran:fa_time_cal_to_jd	zig-export	ok
+forapollo_time_utc_to_tai	ephemeris	(f64 utc_jd, f64* tai_jd, i32* info) -> void	fortran:fa_time_utc_to_tai	zig-export	ok

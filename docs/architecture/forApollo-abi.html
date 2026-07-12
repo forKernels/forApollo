@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>forApollo — Architecture &amp; ABI Surface</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         max-width: 1000px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.55; }
+  h1 { font-size: 1.8rem; border-bottom: 2px solid #1a1a1a; padding-bottom: 0.4rem; }
+  h2 { font-size: 1.3rem; margin-top: 2rem; color: #b00020; }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+  code, pre { font-family: "SF Mono", "Menlo", monospace; font-size: 0.85rem; }
+  pre { background: #f5f5f7; padding: 0.9rem 1.1rem; border-left: 3px solid #b00020; overflow-x: auto; }
+  code { background: #f5f5f7; padding: 0.1rem 0.35rem; border-radius: 3px; }
+  .meta { color: #555; font-size: 0.9rem; }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+  th, td { text-align: left; padding: 0.45rem 0.7rem; border-bottom: 1px solid #ccc; vertical-align: top; }
+  th { background: #f5f5f7; }
+  .ok { color: #1b5e20; font-weight: 600; }
+  .warn { color: #b8860b; font-weight: 600; }
+  .bad { color: #b71c1c; font-weight: 600; }
+  .pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.8rem; font-weight: 600; }
+  .pill.compliant { background: #e8f5e9; color: #1b5e20; }
+  .pill.remediation { background: #fff4e5; color: #b8860b; }
+  .pill.broken { background: #ffebee; color: #b71c1c; }
+</style>
+</head>
+<body>
+
+<h1>forApollo — Architecture &amp; ABI Surface</h1>
+
+<p class="meta">
+  Generated 2026-06-19 &middot; public C-ABI prefix <code>forapollo_</code> &middot; internal Fortran prefix <code>fa_</code>
+  &middot; status <span class="pill compliant">COMPLIANT — reference model</span><br>
+  Conforms to the <a href="../../../Wintermute/docs/architecture/zortran-wiring-contract.html">Zortran Wiring Contract</a> (rev 2026-06-19).
+  Copyright The Fantastic Planet — David Clabaugh.
+</p>
+
+<h2>Purpose</h2>
+
+<p>
+forApollo is a universal state estimation, navigation, and guidance (GNC) engine: Kalman/extended/unscented/error-state
+filters, information and particle filters, batch/smoother orbit determination, state propagation (delegating ODE work to
+forMath), guidance and control laws (ZEM/ZEV, proportional navigation, Lambert, LQR, path following), a coordinate-frame
+catalog, and astrodynamics / environment / time utilities. The algorithms are domain-agnostic — <em>"the state vector
+doesn't care what it represents."</em> The same EKF that tracks a spacecraft tracks a robot-arm joint or a portfolio's drift.
+</p>
+
+<h2>Zortran Status</h2>
+
+<p>
+forApollo is the <strong>canonical reference model</strong> for the three-layer Zortran Wiring Contract. It implements the
+contract exactly:
+</p>
+
+<ul>
+  <li><strong>Layer 1 — Fortran kernel (internal).</strong> Pure math in <code>src/fortran/*.f90</code>,
+      <code>bind(C, name="fa_*")</code> using the <em>internal-only</em> <code>fa_</code> prefix. No consumer binds an
+      <code>fa_*</code> symbol; it lives inside the archive.</li>
+  <li><strong>Layer 2 — Producer Zig export (the sole public C-ABI).</strong> <code>src/zig/exports.zig</code> declares
+      <strong>62</strong> <code>export fn forapollo_* (...) callconv(.c)</code> functions. Each validates inputs, then
+      dispatches to its Fortran kernel via an <code>extern "c" fn fa_*</code> declaration (in
+      <code>src/zig/fortran.zig</code>). The math is never reimplemented in Zig.</li>
+  <li><strong>Layer 3 — Consumer.</strong> Python (ctypes), Wintermute, and sibling libs link the prebuilt
+      <code>libforapollo.a</code> and bind the Zig export <code>forapollo_*</code> only — never an <code>fa_*</code>
+      Fortran symbol — and compile zero forApollo Zig.</li>
+</ul>
+
+<p>
+Neither anti-pattern is present: <span class="ok">no Anti-Pattern A</span> (every <code>forapollo_*</code> export calls a
+real Fortran kernel — no pure-Zig math behind a Fortran-sounding name) and <span class="ok">no Anti-Pattern B</span>
+(Fortran exposes only the internal <code>fa_*</code> prefix; there is no <code>bind(C, name="forapollo_*")</code> for a
+consumer to bind directly).
+</p>
+
+<p>
+<strong>The one gap:</strong> the <code>winX86</code> target archive is not yet built (see Delivery). This is a build-coverage
+gap, not a wiring violation — the source and ABI are compliant on every target.
+</p>
+
+<h2>ABI Surface</h2>
+
+<p>
+62 public <code>forapollo_*</code> symbols, all defined in <code>src/zig/exports.zig</code> and all backed by an identically
+named <code>fa_*</code> Fortran kernel. All matrices cross the C ABI as <strong>flat 1-D row-major</strong> arrays
+(<code>P(n*n)</code> covariance, <code>F(n*n)</code> dynamics Jacobian, <code>H(m*n)</code> measurement Jacobian).
+Estimator/guidance routines return a status via the trailing <code>info</code> out-pointer
+(<code>0=ok, 1=diverged, 2=singular, 3=invalid input, 4=convergence failure, 5=integration failure</code>).
+The full machine-readable list is in <a href="forApollo-abi.tsv"><code>forApollo-abi.tsv</code></a>.
+</p>
+
+<p class="meta">
+Note: the Fortran kernel layer is broader than the public surface — 114 <code>fa_*</code> kernels exist, of which 62 are
+currently exported. The remaining ~52 (e.g. <code>fa_guidance_ddp</code>, <code>fa_astro_bielliptic</code>, several
+<code>fa_coords_*_matrix</code> and <code>fa_time_*</code> conversions) are implemented and backed but not yet wrapped by a
+<code>forapollo_*</code> Layer-2 export.
+</p>
+
+<h3>Estimation — Kalman family (KF / EKF / IEKF / UKF / ESKF / SR)</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_kf_predict</code></td><td>Linear Kalman predict (covariance time update).</td></tr>
+  <tr><td><code>forapollo_kf_update</code></td><td>Linear Kalman measurement update with ternary validity gate.</td></tr>
+  <tr><td><code>forapollo_ekf_predict</code></td><td>Extended KF predict; built-in or function-pointer dynamics.</td></tr>
+  <tr><td><code>forapollo_ekf_update</code></td><td>Extended KF measurement update; built-in or function-pointer observation.</td></tr>
+  <tr><td><code>forapollo_iekf_update</code></td><td>Iterated EKF update (relinearizes to tolerance).</td></tr>
+  <tr><td><code>forapollo_ukf_predict</code></td><td>Unscented KF predict (sigma-point time update).</td></tr>
+  <tr><td><code>forapollo_ukf_update</code></td><td>Unscented KF measurement update.</td></tr>
+  <tr><td><code>forapollo_eskf_predict</code></td><td>Error-state KF predict (Apollo heritage; nominal + error state).</td></tr>
+  <tr><td><code>forapollo_eskf_update</code></td><td>Error-state KF measurement update.</td></tr>
+  <tr><td><code>forapollo_eskf_inject</code></td><td>Inject error state into nominal and reset.</td></tr>
+  <tr><td><code>forapollo_srekf_predict</code></td><td>Square-root EKF predict (numerically stable, Cholesky factor S).</td></tr>
+  <tr><td><code>forapollo_srekf_update</code></td><td>Square-root EKF update.</td></tr>
+  <tr><td><code>forapollo_srukf_predict</code></td><td>Square-root UKF predict.</td></tr>
+  <tr><td><code>forapollo_srukf_update</code></td><td>Square-root UKF update.</td></tr>
+</table>
+
+<h3>Estimation — information, particle, smoothers, batch</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_if_predict</code></td><td>Information filter predict (information vector + matrix).</td></tr>
+  <tr><td><code>forapollo_if_update</code></td><td>Information filter update (additive — multi-sensor fusion).</td></tr>
+  <tr><td><code>forapollo_pf_sir_predict</code></td><td>SIR particle filter predict (propagate particles + process noise).</td></tr>
+  <tr><td><code>forapollo_pf_sir_update</code></td><td>SIR particle filter weight update from measurement likelihood.</td></tr>
+  <tr><td><code>forapollo_pf_sir_resample</code></td><td>SIR particle resampling.</td></tr>
+  <tr><td><code>forapollo_pf_rb_update</code></td><td>Rao-Blackwellized particle update (marginalized linear sub-state).</td></tr>
+  <tr><td><code>forapollo_rts_smooth</code></td><td>Rauch-Tung-Striebel fixed-interval smoother.</td></tr>
+  <tr><td><code>forapollo_urtss_smooth</code></td><td>Unscented RTS smoother.</td></tr>
+  <tr><td><code>forapollo_batch_wls</code></td><td>Batch weighted least squares (orbit determination).</td></tr>
+  <tr><td><code>forapollo_batch_map</code></td><td>Batch maximum a posteriori estimate.</td></tr>
+</table>
+
+<h3>Propagation</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_propagate</code></td><td>Advance state by dt × n_steps via dynamics f (pointer or model_id); dispatches to forMath ODE solvers.</td></tr>
+  <tr><td><code>forapollo_propagate_stm</code></td><td>Propagate state plus state-transition matrix Φ.</td></tr>
+  <tr><td><code>forapollo_propagate_batch</code></td><td>OpenMP batch propagation of N states.</td></tr>
+</table>
+
+<h3>Dynamics &amp; observation models (built-in catalog)</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_dynamics_dispatch</code></td><td>Evaluate ẋ for a built-in dynamics model by id.</td></tr>
+  <tr><td><code>forapollo_dynamics_jacobian</code></td><td>Analytic dynamics Jacobian F for a built-in model.</td></tr>
+  <tr><td><code>forapollo_observe_dispatch</code></td><td>Predict measurement z for a built-in observation model by id.</td></tr>
+  <tr><td><code>forapollo_observe_jacobian</code></td><td>Analytic measurement Jacobian H for a built-in model.</td></tr>
+</table>
+
+<h3>Guidance / GNC / control</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_guidance_zem</code></td><td>Zero-Effort-Miss guidance (Apollo P63/P64).</td></tr>
+  <tr><td><code>forapollo_guidance_zev</code></td><td>Zero-Effort-Velocity guidance.</td></tr>
+  <tr><td><code>forapollo_guidance_eguidance</code></td><td>E-guidance to a target state.</td></tr>
+  <tr><td><code>forapollo_guidance_pn_pure</code></td><td>Pure proportional navigation.</td></tr>
+  <tr><td><code>forapollo_guidance_pn_aug</code></td><td>Augmented proportional navigation (target-accel term).</td></tr>
+  <tr><td><code>forapollo_guidance_pn_true</code></td><td>True proportional navigation.</td></tr>
+  <tr><td><code>forapollo_guidance_lambert</code></td><td>Lambert two-point boundary-value transfer-orbit solver.</td></tr>
+  <tr><td><code>forapollo_guidance_lqr</code></td><td>Linear-quadratic regulator control law.</td></tr>
+  <tr><td><code>forapollo_guidance_pure_pursuit</code></td><td>Pure-pursuit steering (ground vehicles).</td></tr>
+  <tr><td><code>forapollo_guidance_stanley</code></td><td>Stanley path-following controller.</td></tr>
+  <tr><td><code>forapollo_guidance_traj_track</code></td><td>Trajectory-tracking feedback law.</td></tr>
+  <tr><td><code>forapollo_guidance_min_energy</code></td><td>Minimum-energy guidance to a target.</td></tr>
+</table>
+
+<h3>Coordinates &amp; frame transforms</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_coords_transform</code></td><td>Generic frame-to-frame transform by from/to id.</td></tr>
+  <tr><td><code>forapollo_coords_eci_to_ecef</code></td><td>ECI (J2000) → ECEF by GMST.</td></tr>
+  <tr><td><code>forapollo_coords_ecef_to_eci</code></td><td>ECEF → ECI (J2000) by GMST.</td></tr>
+  <tr><td><code>forapollo_coords_ecef_to_geodetic</code></td><td>ECEF → geodetic lat/lon/alt (ellipsoid a, f).</td></tr>
+  <tr><td><code>forapollo_coords_geodetic_to_ecef</code></td><td>Geodetic lat/lon/alt → ECEF.</td></tr>
+  <tr><td><code>forapollo_coords_cart_to_keplerian</code></td><td>Cartesian state → classical orbital elements.</td></tr>
+  <tr><td><code>forapollo_coords_keplerian_to_cart</code></td><td>Classical orbital elements → Cartesian state.</td></tr>
+</table>
+
+<h3>Astrodynamics (Kepler / orbital)</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_astro_kepler_solve</code></td><td>Solve Kepler's equation for eccentric anomaly.</td></tr>
+  <tr><td><code>forapollo_astro_vis_viva</code></td><td>Vis-viva orbital speed at radius r.</td></tr>
+  <tr><td><code>forapollo_astro_period</code></td><td>Orbital period from semi-major axis.</td></tr>
+  <tr><td><code>forapollo_astro_hohmann</code></td><td>Hohmann transfer Δv1, Δv2, time of flight.</td></tr>
+  <tr><td><code>forapollo_astro_planetary_mu</code></td><td>Gravitational parameter μ for a body id.</td></tr>
+</table>
+
+<h3>Environment &amp; time</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_environ_atmosphere_us76</code></td><td>US Standard Atmosphere 1976 (ρ, T, p).</td></tr>
+  <tr><td><code>forapollo_environ_gravity_j2</code></td><td>J2-perturbed gravity acceleration vector.</td></tr>
+  <tr><td><code>forapollo_environ_geodesic_vincenty</code></td><td>Vincenty geodesic distance and azimuths.</td></tr>
+  <tr><td><code>forapollo_time_gmst</code></td><td>Greenwich Mean Sidereal Time from UT1 JD.</td></tr>
+  <tr><td><code>forapollo_time_cal_to_jd</code></td><td>Calendar date/time → Julian Date.</td></tr>
+  <tr><td><code>forapollo_time_utc_to_tai</code></td><td>UTC JD → TAI JD (leap-second offset).</td></tr>
+</table>
+
+<h3>Library</h3>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th></tr>
+  <tr><td><code>forapollo_version</code></td><td>Packed library version (e.g. <code>0x000100</code> = v0.1.0).</td></tr>
+</table>
+
+<h2>Backing — Layer 2 → Layer 1</h2>
+
+<p>
+Every public <code>forapollo_*</code> Zig export reaches its Fortran kernel through an identically named
+<code>extern "c" fn fa_*</code> declaration. The math lives in Fortran; Zig validates and marshals. The exemplary mapping
+(the contract's worked example, verbatim from this repo):
+</p>
+
+<pre><code>// LAYER 1 — src/fortran/forapollo_estimate.f90  (internal; fa_ prefix, no consumer binds it)
+subroutine fa_kf_predict(n, x, P, F, Q, info) bind(C, name="fa_kf_predict")
+    use iso_c_binding
+    integer(c_int), value         :: n
+    real(c_double), intent(inout) :: x(n), P(n*n)
+    real(c_double), intent(in)    :: F(n*n), Q(n*n)
+    integer(c_int), intent(out)   :: info
+    ! ...the actual Kalman predict math...
+end subroutine fa_kf_predict
+
+// LAYER 2 — src/zig/exports.zig  (THE public C-ABI; ships in libforapollo.a)
+pub export fn forapollo_kf_predict(
+    n: i32, x: [*]f64, P: [*]f64, F: [*]const f64, Q: [*]const f64, info: *i32,
+) callconv(.c) void {
+    if (n &lt;= 0) { info.* = 3; return; }   // validate (Zig)
+    dispatch.kfPredict(n, x, P, F, Q, info); // -> extern fn fa_kf_predict (Fortran)
+}
+
+// LAYER 3 — consumer (Python ctypes / Wintermute / sibling)
+//   binds forapollo_kf_predict; never sees fa_kf_predict.</code></pre>
+
+<p>
+Backing summary: <strong>all 62</strong> exports are <code>abi_owner = zig-export</code>, <code>backing = fortran:fa_&lt;sym&gt;</code>.
+There are <strong>zero</strong> Anti-Pattern B symbols (no <code>bind(C, name="forapollo_*")</code> anywhere in
+<code>src/fortran/</code>) and <strong>zero</strong> Anti-Pattern A symbols (no pure-Zig math behind a
+<code>forapollo_*</code> name).
+</p>
+
+<h2>Delivery</h2>
+
+<table>
+  <tr><th>Target</th><th>Archive path</th><th>Status</th></tr>
+  <tr><td><code>macos</code></td><td><code>prebuilt/lib/macos/libforapollo.a</code></td><td><span class="ok">present</span> (full Zig+Fortran public library)</td></tr>
+  <tr><td><code>thor</code></td><td><code>prebuilt/lib/thor/libforapollo.a</code></td><td><span class="warn">not on disk under standard path</span></td></tr>
+  <tr><td><code>linX86</code></td><td><code>prebuilt/lib/linX86/libforapollo.a</code></td><td><span class="warn">not on disk under standard path</span> (legacy Fortran-only <code>prebuilt/linux-arm64/lib/libforapollo_fortran.a</code> exists)</td></tr>
+  <tr><td><code>winX86</code></td><td><code>prebuilt/lib/winX86/libforapollo.a</code></td><td><span class="bad">missing — the one open gap</span></td></tr>
+</table>
+
+<p class="meta">
+The repo also carries legacy <code>prebuilt/{macos-arm64,linux-arm64}/lib/libforapollo_fortran.a</code> (Fortran-only,
+non-standard long target names). The standardized full library is <code>prebuilt/lib/macos/libforapollo.a</code>. Build the
+remaining short-name target archives (esp. <code>winX86</code>) to close the gap.
+</p>
+
+<h2>LUT</h2>
+
+<p>
+The full machine-greppable symbol table is <a href="forApollo-abi.tsv"><code>forApollo-abi.tsv</code></a> —
+<strong>62</strong> data rows (plus header), one per public <code>forapollo_*</code> symbol.
+</p>
+
+<hr>
+<p class="meta">
+Reference: <a href="../../../Wintermute/docs/architecture/zortran-wiring-contract.html">Zortran Wiring Contract</a>
+(<code>Wintermute/docs/architecture/zortran-wiring-contract.html</code>, rev 2026-06-19) — forApollo is its worked example.
+</p>
+
+</body>
+</html>
