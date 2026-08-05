@@ -195,10 +195,11 @@ pub fn build(b: *std.Build) void {
     // Stage 1: Build Fortran kernels via make (if not using prebuilt)
     // -----------------------------------------------------------------------
 
-    // Pass TARGET so Stage 1 (Makefile) writes its per-target Fortran objects to
-    // the same dir Stage 2 reads (prebuilt/<target>/obj) — even when cross-
-    // compiling (-Dtarget=...). All 4 targets build without clobbering.
-    const make_step = b.addSystemCommand(&.{ "make", "lib", b.fmt("TARGET={s}", .{target_name}) });
+    // Stage 1 is external and runs BEFORE this: `make lib TARGET=<target>` writes
+    // per-target Fortran objects to the same dir Stage 2 reads
+    // (prebuilt/<target>/obj) — even when cross-compiling (-Dtarget=...). All 4
+    // targets build without clobbering. build.zig does NOT invoke make; the
+    // object-presence gate below enforces the ordering instead.
 
     // -----------------------------------------------------------------------
     // Static library: libforapollo.a — assembled by tools/wrap.zig.
@@ -258,12 +259,20 @@ pub fn build(b: *std.Build) void {
         "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
         "forapollo_astro",     "forapollo_environ",  "forapollo_time",
     };
+    // Stage 1 output is Stage 2 input, whether Stage 1 just ran or the objects were
+    // committed (-Duse-prebuilt). A missing object is a HARD failure: wrapping zero
+    // Fortran members yields an archive that links but is missing every kernel, and
+    // that only surfaces in the consumer.
     for (fortran_kernel_basenames) |name| {
-        wrap_run.addArg(b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name })));
-    }
-
-    if (!use_prebuilt) {
-        wrap_run.step.dependOn(&make_step.step);
+        const obj = b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }));
+        std.fs.cwd().access(obj, .{}) catch std.debug.panic(
+            "[forApollo] Stage 1 object missing: {s}\n" ++
+                "Run Stage 1 first:\n" ++
+                "    make lib TARGET={s}   # gfortran -> {s}/*.o\n" ++
+                "    zig build             # wrap them into the archive\n",
+            .{ obj, target_name, fortran_obj_dir },
+        );
+        wrap_run.addArg(obj);
     }
 
     // Compile GPU kernels via nvfortran (opt-in via -Dgpu, Thor/Blackwell only)
@@ -307,9 +316,6 @@ pub fn build(b: *std.Build) void {
         });
         linkDeps(b, shared_lib, fortran_archive, target_name);
 
-        if (!use_prebuilt) {
-            shared_lib.step.dependOn(&make_step.step);
-        }
 
         const install = b.addInstallArtifact(shared_lib, .{
         });
@@ -333,9 +339,6 @@ pub fn build(b: *std.Build) void {
     });
     linkDeps(b, unit_tests, fortran_archive, target_name);
 
-    if (!use_prebuilt) {
-        unit_tests.step.dependOn(&make_step.step);
-    }
 
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run Zig unit tests");
