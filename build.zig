@@ -55,7 +55,10 @@ const upstream_libs = [_][]const u8{
     "forfft",
     "foropt",
     "forternary",
-    "forGraph",
+    // lowercase to match the canonical self-contained shared delivery
+    // libforgraph.so (the capital-G libforGraph.a is a non-self-contained
+    // static archive that leaks undefined fgeo_shape_* externals).
+    "forgraph",
     "fortime",
 };
 
@@ -76,10 +79,12 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
 
     for (siblings) |dep| {
         const sibling = dep.path;
-        // Standard paths
+        // CANON (Prebuilt path canon): sibling libs live in prebuilt/<target>/ with
+        // NO /lib segment. This must be the highest-priority search path.
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}", .{ sibling, target_name }) });
+        // Legacy/fallback paths (kept for non-standardized repos)
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
-        // Fallback for non-standardized repos
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
         step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
     }
@@ -97,6 +102,12 @@ fn linkDeps(
 ) void {
     // Fortran kernel archive (stage-1 output)
     step.addObjectFile(b.path(fortran_obj));
+
+    // Sibling .so deliveries follow the forKernels "consumer-provides-forMath"
+    // model: e.g. libforternary.so references fm_* as undefined (no DT_NEEDED
+    // for forMath) and expects the final consumer to supply them. lld's default
+    // --no-allow-shlib-undefined rejects that; relax it for these link steps.
+    step.linker_allow_shlib_undefined = true;
 
     // Sibling search paths
     addSiblingPaths(step, b, target_name);
