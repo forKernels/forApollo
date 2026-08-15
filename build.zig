@@ -5,7 +5,9 @@
 //   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
 //   - Branches/targets: macos | thor | linX86 | winX86  (short names only)
 //   - Sibling resolution: ../sibling/prebuilt/<branch>/
-//   - Public C-ABI prefix: fa_  (kernels ship the public symbols directly)
+//   - Public C-ABI prefix: fapo_ (Zig exports, sole public surface; short-prefix
+//     canon 2026-07-02, forapollo_ retired); fa_ is the INTERNAL Fortran bind(C)
+//     prefix — internalized by tools/wrap.zig
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
 // Stage 2: This file links Fortran objects + deps -> static + shared libraries
@@ -137,7 +139,7 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseFast — Debug materializes 'undefined' as real bytes and shipped a 68MB forCV archive)") orelse .ReleaseFast;
     const target_name = getTargetName(target.result);
 
     // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
@@ -193,13 +195,19 @@ pub fn build(b: *std.Build) void {
     // Stage 1: Build Fortran kernels via make (if not using prebuilt)
     // -----------------------------------------------------------------------
 
-    // Pass TARGET so Stage 1 (Makefile) writes its per-target Fortran objects to
-    // the same dir Stage 2 reads (prebuilt/<target>/obj) — even when cross-
-    // compiling (-Dtarget=...). All 4 targets build without clobbering.
-    const make_step = b.addSystemCommand(&.{ "make", "lib", b.fmt("TARGET={s}", .{target_name}) });
+    // Stage 1 is external and runs BEFORE this: `make lib TARGET=<target>` writes
+    // per-target Fortran objects to the same dir Stage 2 reads
+    // (prebuilt/<target>/obj) — even when cross-compiling (-Dtarget=...). All 4
+    // targets build without clobbering. build.zig does NOT invoke make; the
+    // object-presence gate below enforces the ordering instead.
 
     // -----------------------------------------------------------------------
-    // Static library: libforapollo.a (Zig-only, no external linking)
+    // Static library: libforapollo.a — assembled by tools/wrap.zig.
+    // Zig exports object + this repo's Fortran .o are dup/MOD-localized,
+    // ld -r combined, then EVERYTHING except fapo_* is internalized
+    // (fa_* is internal-only per the wiring contract — the wrap enforces it
+    // with a gate that fails the build on any leak). Sibling deps (forMath,
+    // forCUDA, ...) remain external per the no-bundled-deps canon.
     // -----------------------------------------------------------------------
 
     // GPU dispatch layer (zig/src/*) is a separate module tree. Expose it under
@@ -216,30 +224,32 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     root_module.addOptions("build_opts", build_opts);
     root_module.addImport("gpu_dispatch", gpu_dispatch_mod);
 
-    const static_lib = b.addLibrary(.{
-        .linkage = .static,
-        .name = "forapollo",
+    const exports_obj = b.addObject(.{
+        .name = "forapollo_exports",
         .root_module = root_module,
     });
-    static_lib.linkLibC();
 
-    if (!use_prebuilt) {
-        static_lib.step.dependOn(&make_step.step);
-    }
+    const wrap_exe = b.addExecutable(.{
+        .name = "forapollo-wrap",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/wrap.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
 
-    // Bundle forApollo's own Fortran kernels so libforapollo.a is a
-    // self-contained "Zig wraps Fortran" delivery. Sibling deps
-    // (forMath, forBayes, forCUDA, ...) remain external per the
-    // no-bundled-deps canon — consumers link those separately.
-    //
-    // NOTE: bundled as individual .o files — addObjectFile on a .a would
-    // embed libforapollo_fortran.a whole as a nested archive member, which
-    // downstream linkers reject (same failure mode as forFFT/forMath packs).
-    // Shared lib + tests still link the archive (correct for final links).
+    const wrap_run = b.addRunArtifact(wrap_exe);
+    wrap_run.has_side_effects = true; // writes prebuilt/<target>/libforapollo.a
+    wrap_run.addArg(b.pathFromRoot(b.fmt("prebuilt/{s}/libforapollo.a", .{target_name})));
+    wrap_run.addArg(b.pathFromRoot(b.fmt(".zig-cache/wrap/{s}", .{target_name})));
+    wrap_run.addArg("*fapo_*");
+    wrap_run.addFileArg(exports_obj.getEmittedBin());
+
     // Fortran objects always live at prebuilt/<target>/obj — the Makefile
     // (Stage 1) writes them there per-target, so the make-output path always
     // equals this Stage-2 read path for the SAME target.
@@ -249,14 +259,21 @@ pub fn build(b: *std.Build) void {
         "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
         "forapollo_astro",     "forapollo_environ",  "forapollo_time",
     };
+    // Stage 1 output is Stage 2 input, whether Stage 1 just ran or the objects were
+    // committed (-Duse-prebuilt). A missing object is a HARD failure: wrapping zero
+    // Fortran members yields an archive that links but is missing every kernel, and
+    // that only surfaces in the consumer.
     for (fortran_kernel_basenames) |name| {
-        static_lib.addObjectFile(.{ .cwd_relative = b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }) });
+        const obj = b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }));
+        std.fs.cwd().access(obj, .{}) catch std.debug.panic(
+            "[forApollo] Stage 1 object missing: {s}\n" ++
+                "Run Stage 1 first:\n" ++
+                "    make lib TARGET={s}   # gfortran -> {s}/*.o\n" ++
+                "    zig build             # wrap them into the archive\n",
+            .{ obj, target_name, fortran_obj_dir },
+        );
+        wrap_run.addArg(obj);
     }
-
-    {
-        const install = b.addInstallArtifact(static_lib, .{
-            .dest_dir = .{ .override = .{ .custom = target_name } },
-        });
 
     // Compile GPU kernels via nvfortran (opt-in via -Dgpu, Thor/Blackwell only)
     if (gpu and target.result.cpu.arch == .aarch64 and target.result.os.tag == .linux) {
@@ -269,17 +286,13 @@ pub fn build(b: *std.Build) void {
             compile.addFileArg(b.path(b.fmt("src/gpu/{s}.cuf", .{gpu_src})));
             compile.addArg("-o");
             const obj = compile.addOutputFileArg(b.fmt("{s}.o", .{gpu_src}));
-            static_lib.root_module.addObjectFile(obj);
-            static_lib.step.dependOn(&compile.step);
+            wrap_run.addFileArg(obj);
         }
-        // forCUDA runtime (fc_rt_*) for the GPU dispatch layer (zig/src/*).
-        // Resolved at the consumer's final link; the path documents the dep.
-        static_lib.addLibraryPath(.{ .cwd_relative = "../forCUDA/prebuilt/linux-arm64/lib" });
-        static_lib.linkSystemLibrary("forcuda");
+        // forCUDA runtime (fc_rt_*) stays an undefined ref in the archive;
+        // the consumer's final link resolves it (no-bundled-deps canon).
     }
 
-        b.getInstallStep().dependOn(&install.step);
-    }
+    b.getInstallStep().dependOn(&wrap_run.step);
 
     // -----------------------------------------------------------------------
     // Shared library: zig build shared  (links Fortran + all deps)
@@ -303,9 +316,6 @@ pub fn build(b: *std.Build) void {
         });
         linkDeps(b, shared_lib, fortran_archive, target_name);
 
-        if (!use_prebuilt) {
-            shared_lib.step.dependOn(&make_step.step);
-        }
 
         const install = b.addInstallArtifact(shared_lib, .{
         });
@@ -329,9 +339,6 @@ pub fn build(b: *std.Build) void {
     });
     linkDeps(b, unit_tests, fortran_archive, target_name);
 
-    if (!use_prebuilt) {
-        unit_tests.step.dependOn(&make_step.step);
-    }
 
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run Zig unit tests");
