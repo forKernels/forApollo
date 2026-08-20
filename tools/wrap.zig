@@ -170,6 +170,16 @@ pub fn main() !void {
     {
         var argv = std.ArrayList([]const u8){};
         try argv.appendSlice(a, &.{ objcopy, "--wildcard" });
+        // LINKAGE MACHINERY — must stay GLOBAL, and this is not optional.
+        // On MinGW/PE, GCC and Zig reach an imported global through an
+        // indirection stub `.refptr.<sym>`; for a stack-protected function that
+        // is `.refptr.__stack_chk_guard`, loaded RIP-relative in the PROLOGUE.
+        // It is emitted per-object and must stay global so it COMDAT-merges to
+        // one copy. Localized, the linker leaves the displacement at ZERO and
+        // the function dereferences its own opcode bytes -> 0xC0000005, in any
+        // gfortran-linked consumer. Toolchain stubs, not API names.
+        //   nm <lib> | grep -w '.refptr.__stack_chk_guard'   R = fine, r = BROKEN
+        try argv.appendSlice(a, &.{ "--keep-global-symbol", ".refptr.*" });
         for (globs.items) |g| {
             try argv.append(a, "--keep-global-symbol");
             try argv.append(a, g);
@@ -230,7 +240,13 @@ pub fn main() !void {
             if (!std.ascii.isUpper(c) or c == 'U' or c == 'C') continue;
             // _MOD_ is never a real C-ABI name — flag regardless of token match.
             const is_mod = std.mem.indexOf(u8, name, "_MOD_") != null;
-            var matched = false;
+            // COFF `.refptr.<sym>` stubs are toolchain linkage machinery, not
+            // API. The keep pass deliberately holds them global so the stack
+            // protector's RIP-relative prologue load resolves; localizing one
+            // strands the displacement at 0 and the function faults on its own
+            // opcode bytes. A stub carries no callable surface, so this opens
+            // no bind-Fortran path past the seal.
+            var matched = std.mem.indexOf(u8, name, ".refptr.") != null;
             if (!is_mod) for (tokens.items) |t| {
                 if (std.mem.indexOf(u8, name, t) != null) {
                     matched = true;
