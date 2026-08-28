@@ -609,6 +609,18 @@ pub fn guidanceLambert(r1: [*]const f64, r2: [*]const f64, tof: f64, mu: f64, v1
 pub fn guidanceLqr(n: i32, m: i32, A: [*]const f64, B: [*]const f64, Q_cost: [*]const f64, R_cost: [*]const f64, x: [*]const f64, u_cmd: [*]f64, info: *i32) void {
     fortran.fa_guidance_lqr(n, m, A, B, Q_cost, R_cost, x, u_cmd, info);
 }
+pub fn guidanceIlqr(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) void {
+    fortran.fa_guidance_ilqr(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+pub fn guidanceDdp(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, alpha: f64, info: *i32) void {
+    fortran.fa_guidance_ddp(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, alpha, info);
+}
+pub fn guidanceMpcShooting(n: i32, m: i32, N_horizon: i32, x0: [*]const f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) void {
+    fortran.fa_guidance_mpc_shooting(n, m, N_horizon, x0, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+pub fn guidanceMpcCollocation(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) void {
+    fortran.fa_guidance_mpc_collocation(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
 pub fn guidancePurePursuit(x_pos: [*]const f64, x_lookahead: [*]const f64, L_wheelbase: f64, steer_cmd: *f64, info: *i32) void {
     fortran.fa_guidance_pure_pursuit(x_pos, x_lookahead, L_wheelbase, steer_cmd, info);
 }
