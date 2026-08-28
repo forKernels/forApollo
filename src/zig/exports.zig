@@ -814,6 +814,48 @@ pub export fn fapo_guidance_lqr(n: i32, m: i32, A: [*]const f64, B: [*]const f64
     dispatch.guidanceLqr(n, m, A, B, Q_cost, R_cost, x, u_cmd, info);
 }
 
+// The four trajectory-optimisation entries below were left behind by the
+// fa_ -> fapo_ rename. Both prefixes still ship from this archive (113 fa_,
+// 62 fapo_), and the fapo_ half covered the closed-form guidance laws while
+// these four - the iterative ones - kept only their fa_ names. forNav's
+// Fortran calls fapo_guidance_mpc_shooting directly and has been linking
+// against a symbol nothing exported.
+//
+// The argument order is the Fortran's, unchanged: a rename that also reshaped
+// the call would be two changes wearing one name.
+
+pub export fn fapo_guidance_ilqr(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceIlqr(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+
+pub export fn fapo_guidance_ddp(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, alpha: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceDdp(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, alpha, info);
+}
+
+pub export fn fapo_guidance_mpc_shooting(n: i32, m: i32, N_horizon: i32, x0: [*]const f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceMpcShooting(n, m, N_horizon, x0, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+
+pub export fn fapo_guidance_mpc_collocation(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceMpcCollocation(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+
 pub export fn fapo_guidance_pure_pursuit(x_pos: [*]const f64, x_lookahead: [*]const f64, L_wheelbase: f64, steer_cmd: *f64, info: *i32) callconv(.c) void {
     if (L_wheelbase <= 0.0) {
         info.* = 3;
