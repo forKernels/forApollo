@@ -28,34 +28,158 @@ const builtin = @import("builtin");
 
 // objcopy is `llvm-objcopy` on macOS (no GNU objcopy); GNU `objcopy` elsewhere.
 // Override with the OBJCOPY env var.
-fn objcopyBin(a: std.mem.Allocator) []const u8 {
-    if (std.process.getEnvVarOwned(a, "OBJCOPY")) |v| return v else |_| {}
+// ===========================================================================
+// Zig 0.15.2 / 0.16.0 compatibility layer.
+//
+// This tool SEALS the delivery archive, so the moment a target moves to 0.16
+// and this file does not, that target stops shipping a sealed library at all.
+// The build script configuring cleanly says nothing about it: `zig build -l`
+// enumerates steps without ever compiling this file.
+//
+// Every divergence below is expressed by ALIASING one of two functions rather
+// than branching inside one. An unreferenced function is never analysed, so
+// 0.16 never sees argsAlloc and 0.15.2 never sees std.process.Init -- which a
+// comptime branch inside a single body cannot achieve, because the two mains
+// need different SIGNATURES.
+//
+// Taken from forNet/forIO/forBio tools/wrap.zig, which already carry it. Kept
+// deliberately identical rather than improved, so one fix travels the fleet
+// instead of twenty-five variants drifting. Duplicated rather than imported
+// because a build tool must not acquire a cross-repo dependency to run.
+// ===========================================================================
+const zig16 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 16, .patch = 0 }) != .lt;
+
+fn objcopyBin(override: ?[]const u8) []const u8 {
+    if (override) |v| return v;
     return if (builtin.os.tag == .macos) "/opt/homebrew/bin/llvm-objcopy" else "objcopy";
 }
 
-fn run(a: std.mem.Allocator, argv: []const []const u8) !void {
+// 0.16 replaced std.process.Child with std.process.spawn.
+const run = if (zig16) run16 else run15;
+
+fn run15(a: std.mem.Allocator, argv: []const []const u8) !void {
     var child = std.process.Child.init(argv, a);
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Inherit;
-    const term = try child.spawnAndWait();
-    if (term != .Exited or term.Exited != 0) {
+    return checkTerm(try child.spawnAndWait(), argv);
+}
+
+fn run16(a: std.mem.Allocator, argv: []const []const u8) !void {
+    var threaded: std.Io.Threaded = .init(a, .{});
+    defer threaded.deinit();
+    const tio = threaded.io();
+    var child = try std.process.spawn(tio, .{ .argv = argv, .stdout = .ignore });
+    return checkTerm(try child.wait(tio), argv);
+}
+
+/// 0.16 lowercased the Term union tags: .Exited -> .exited. `anytype` lets one
+/// body serve both; the tag is resolved per toolchain at comptime.
+fn checkTerm(term: anytype, argv: []const []const u8) !void {
+    const ok = if (comptime @hasField(@TypeOf(term), "Exited"))
+        term == .Exited and term.Exited == 0
+    else
+        term == .exited and term.exited == 0;
+    if (!ok) {
         std.debug.print("wrap: command failed: {s}\n", .{argv[0]});
         return error.CommandFailed;
     }
 }
 
-fn capture(a: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+const capture = if (zig16) capture16 else capture15;
+
+fn capture15(a: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     const res = try std.process.Child.run(.{ .allocator = a, .argv = argv, .max_output_bytes = 64 * 1024 * 1024 });
     a.free(res.stderr);
     return res.stdout;
 }
 
-pub fn main() !void {
+/// 0.16 has no run-and-capture, so spawn with stdout redirected to a temp file
+/// and read it back. The name is salted with the argv pointer so two concurrent
+/// wrap processes cannot collide on it.
+fn capture16(a: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    const tmp = try std.fmt.allocPrint(a, ".forapollo-capture-{x}.tmp", .{@intFromPtr(argv.ptr)});
+    defer deleteFile(tmp) catch {};
+    {
+        var threaded: std.Io.Threaded = .init(a, .{});
+        defer threaded.deinit();
+        const tio = threaded.io();
+        const out_file = try std.Io.Dir.cwd().createFile(tio, tmp, .{ .read = true });
+        defer out_file.close(tio);
+        var child = try std.process.spawn(tio, .{ .argv = argv, .stdout = .{ .file = out_file } });
+        _ = try child.wait(tio);
+    }
+    return readFileAlloc(a, tmp, 64 * 1024 * 1024);
+}
+
+// 0.16 removed std.fs.cwd(); directory handles live on std.Io.Dir and every
+// file call takes an `io`.
+inline fn cwdIo() if (zig16) std.Io else void {
+    if (zig16) return std.Io.Threaded.global_single_threaded.io();
+    return {};
+}
+
+/// 0.16 RENAMED makePath to createDirPath. The old name still compiles under
+/// 0.15.2, so a plain rename would have broken the older toolchain silently.
+inline fn makePath(path: []const u8) !void {
+    return if (zig16)
+        std.Io.Dir.cwd().createDirPath(cwdIo(), path)
+    else
+        std.fs.cwd().makePath(path);
+}
+
+inline fn deleteFile(path: []const u8) !void {
+    return if (zig16)
+        std.Io.Dir.cwd().deleteFile(cwdIo(), path)
+    else
+        std.fs.cwd().deleteFile(path);
+}
+
+/// Argument ORDER differs, not just the io parameter: 0.16 is
+/// (source_dir, source_path, dest_dir, dest_path, io, options) where 0.15.2 is
+/// (source_path, dest_dir, dest_path, options). Getting that wrong still
+/// compiles when both paths are []const u8, and copies the wrong file.
+inline fn copyFile(src: []const u8, dst: []const u8) !void {
+    return if (zig16)
+        std.Io.Dir.cwd().copyFile(src, std.Io.Dir.cwd(), dst, cwdIo(), .{})
+    else
+        std.fs.cwd().copyFile(src, std.fs.cwd(), dst, .{});
+}
+
+inline fn readFileAlloc(gpa: std.mem.Allocator, path: []const u8, max: usize) ![]u8 {
+    return if (zig16)
+        std.Io.Dir.cwd().readFileAlloc(cwdIo(), path, gpa, std.Io.Limit.limited(max))
+    else
+        std.fs.cwd().readFileAlloc(gpa, path, max);
+}
+
+pub const main = if (zig16) main16 else main15;
+
+fn main15() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-
     const args = try std.process.argsAlloc(a);
+    const objcopy_override = std.process.getEnvVarOwned(a, "OBJCOPY") catch null;
+    return wrapMain(a, args, objcopy_override);
+}
+
+fn main16(init: std.process.Init.Minimal) !void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var it = try std.process.Args.Iterator.initAllocator(init.args, a);
+    defer it.deinit();
+    var list: std.ArrayListUnmanaged([]const u8) = .empty;
+    while (it.next()) |arg| try list.append(a, arg);
+    // getAlloc, not getPosix: getPosix is POSIX-only and will not compile for
+    // a Windows target.
+    const objcopy_override = init.environ.getAlloc(a, "OBJCOPY") catch null;
+    return wrapMain(a, list.items, objcopy_override);
+}
+
+
+
+fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[]const u8) !void {
     if (args.len < 5) {
         std.debug.print("usage: wrap <out_lib> <workdir> <keep_globs(comma-sep)> <obj>...\n", .{});
         return error.Usage;
@@ -63,18 +187,18 @@ pub fn main() !void {
     const out_lib = args[1];
     const workdir = args[2];
     const inputs = args[4..];
-    const objcopy = objcopyBin(a);
+    const objcopy = objcopyBin(objcopy_override);
 
     // Parse the keep list into globs (for objcopy) and their bare tokens (for
     // the gate check — '*' stripped). Either inline comma-separated globs, or
     // '@<path>' — a manifest file with one glob per line (# comments OK).
-    var globs = std.ArrayList([]const u8){};
-    var tokens = std.ArrayList([]const u8){};
+    var globs: std.ArrayListUnmanaged([]const u8) = .empty;
+    var tokens: std.ArrayListUnmanaged([]const u8) = .empty;
     {
         var keep_text: []const u8 = args[3];
         var delim: u8 = ',';
         if (std.mem.startsWith(u8, keep_text, "@")) {
-            keep_text = try std.fs.cwd().readFileAlloc(a, keep_text[1..], 16 * 1024 * 1024);
+            keep_text = try readFileAlloc(a, keep_text[1..], 16 * 1024 * 1024);
             delim = '\n';
         }
         var it = std.mem.tokenizeScalar(u8, keep_text, delim);
@@ -92,12 +216,12 @@ pub fn main() !void {
 
     // ---- copy every input object into workdir (localize-symbol mutates the
     // object, and Stage-1 outputs under prebuilt/obj must never be touched) ----
-    std.fs.cwd().makePath(workdir) catch {};
-    var objs = std.ArrayList([]const u8){};
+    makePath(workdir) catch {};
+    var objs: std.ArrayListUnmanaged([]const u8) = .empty;
     for (inputs, 0..) |in, i| {
         const base = std.fs.path.basename(in);
         const dst = try std.fs.path.join(a, &.{ workdir, try std.fmt.allocPrint(a, "{d}__{s}", .{ i, base }) });
-        try std.fs.cwd().copyFile(in, std.fs.cwd(), dst, .{});
+        try copyFile(in, dst);
         try objs.append(a, dst);
     }
 
@@ -121,7 +245,7 @@ pub fn main() !void {
             const c = typ[0];
             if (!std.ascii.isUpper(c) or c == 'U' or c == 'C') continue;
             const gop = try sym_owners.getOrPut(name);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
+            if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(a, idx);
         }
     }
@@ -135,7 +259,7 @@ pub fn main() !void {
     // afterwards (they don't match the keep globs), which is safe because by then
     // every reference is already resolved inside the combined object. ----
     var loc_lists = try a.alloc(std.ArrayListUnmanaged([]const u8), objs.items.len);
-    for (loc_lists) |*l| l.* = .{};
+    for (loc_lists) |*l| l.* = .empty;
     var sit = sym_owners.iterator();
     while (sit.next()) |e| {
         const owners = e.value_ptr.items;
@@ -145,7 +269,7 @@ pub fn main() !void {
     var localized: usize = 0;
     for (objs.items, 0..) |o, idx| {
         if (loc_lists[idx].items.len == 0) continue;
-        var argv = std.ArrayList([]const u8){};
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.append(a, objcopy);
         for (loc_lists[idx].items) |s| {
             try argv.append(a, "--localize-symbol");
@@ -159,7 +283,7 @@ pub fn main() !void {
     // ---- ld -r : all objects -> combined.o ----
     const combined = try std.fs.path.join(a, &.{ workdir, "forapollo_combined.o" });
     {
-        var argv = std.ArrayList([]const u8){};
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.appendSlice(a, &.{ "ld", "-r", "-o", combined });
         for (objs.items) |o| try argv.append(a, o);
         try run(a, argv.items);
@@ -168,7 +292,7 @@ pub fn main() !void {
     // ---- keep ONLY the listed globs global; all Fortran goes internal ----
     // Leading '*' in each glob matches both `_<name>` (Mach-O) and `<name>` (ELF).
     {
-        var argv = std.ArrayList([]const u8){};
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.appendSlice(a, &.{ objcopy, "--wildcard" });
         // LINKAGE MACHINERY — must stay GLOBAL, and this is not optional.
         // On MinGW/PE, GCC and Zig reach an imported global through an
@@ -194,7 +318,7 @@ pub fn main() !void {
     // already bound by ld -r, so localizing survivors here is always safe. ----
     {
         const pub_syms = try capture(a, &.{ "nm", "-g", combined });
-        var argv = std.ArrayList([]const u8){};
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.append(a, objcopy);
         var n_mod: usize = 0;
         var it = std.mem.tokenizeScalar(u8, pub_syms, '\n');
@@ -215,8 +339,8 @@ pub fn main() !void {
     }
 
     // ---- ar rcs out_lib combined.o ----
-    if (std.fs.path.dirname(out_lib)) |d| std.fs.cwd().makePath(d) catch {};
-    std.fs.cwd().deleteFile(out_lib) catch {};
+    if (std.fs.path.dirname(out_lib)) |d| makePath(d) catch {};
+    deleteFile(out_lib) catch {};
     try run(a, &.{ "ar", "rcs", out_lib, combined });
 
     // ---- GATE: every public defined symbol must match a keep token ----
