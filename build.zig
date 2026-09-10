@@ -1,5 +1,5 @@
-// forApollo — Zig Build System (Stage 2)
-// Copyright The Fantastic Planet — By David Clabaugh
+// forApollo - Zig Build System (Stage 2)
+// Copyright The Fantastic Planet - By David Clabaugh
 //
 // Per FORKERNELS_BUILD_STANDARD (CANON 2026-06-19):
 //   - Output: prebuilt/<branch>/libforapollo.a  (committed, lean)
@@ -7,7 +7,7 @@
 //   - Sibling resolution: ../sibling/prebuilt/<branch>/
 //   - Public C-ABI prefix: fapo_ (Zig exports, sole public surface; short-prefix
 //     canon 2026-07-02, forapollo_ retired); fa_ is the INTERNAL Fortran bind(C)
-//     prefix — internalized by tools/wrap.zig
+//     prefix - internalized by tools/wrap.zig
 //
 // Stage 1: Makefile compiles Fortran -> libforapollo_fortran.a
 // Stage 2: This file links Fortran objects + deps -> static + shared libraries
@@ -23,7 +23,7 @@ const std = @import("std");
 // Branch name = delivery dir name. Each target branch hardcodes its own.
 const BRANCH_NAME = "winX86";
 
-// forKernels branch-name delivery canon — winX86/linX86/thor/macos.
+// forKernels branch-name delivery canon - winX86/linX86/thor/macos.
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
         .macos => "macos",
@@ -82,14 +82,14 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
         const sibling = dep.path;
         // Branch-name delivery (forKernels standard): each sibling is on its
         // matching target branch and delivers to zig-out/<branch>/lib.
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
         // forMath uses src/zig/zig-out/<branch>/lib for its module libs.
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/src/zig/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/src/zig/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
         // Platform-name fallback for siblings not yet on the delivery standard.
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
     }
 }
 
@@ -104,19 +104,19 @@ fn linkDeps(
     target_name: []const u8,
 ) void {
     // Fortran kernel archive (stage-1 output)
-    step.addObjectFile(b.path(fortran_obj));
+    step.root_module.addObjectFile(b.path(fortran_obj));
 
     // Sibling search paths
     addSiblingPaths(step, b, target_name);
 
     // Link forMath component libraries
     for (formath_libs) |lib_name| {
-        step.linkSystemLibrary(lib_name);
+        step.root_module.linkSystemLibrary(lib_name, .{});
     }
 
     // Link other upstream libraries
     for (upstream_libs) |lib_name| {
-        step.linkSystemLibrary(lib_name);
+        step.root_module.linkSystemLibrary(lib_name, .{});
     }
 
     // System runtime libraries
@@ -125,33 +125,33 @@ fn linkDeps(
     const is_linux = tgt.os.tag == .linux;
     const is_windows = tgt.os.tag == .windows;
     if (is_macos) {
-        step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
-        step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
     } else if (is_linux) {
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("deps/{s}", .{target_name}) });
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("deps/syslibs/{s}", .{target_name}) });
-        step.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
-        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
-        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
-        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("deps/{s}", .{target_name}) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("deps/syslibs/{s}", .{target_name}) });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
     } else if (is_windows) {
-        // Windows (MSYS2 UCRT64): gfortran runtime — GCC 15.2.0
-        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
-        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
+        // Windows (MSYS2 UCRT64): gfortran runtime - GCC 15.2.0
+        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
         // MINGW64 fallback
-        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib" });
-        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib" });
+        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
     }
-    step.linkSystemLibrary("gfortran");
-    step.linkSystemLibrary("gomp");
+    step.root_module.linkSystemLibrary("gfortran", .{});
+    step.root_module.linkSystemLibrary("gomp", .{});
     if (is_windows) {
-        step.linkSystemLibrary("quadmath");
+        step.root_module.linkSystemLibrary("quadmath", .{});
         // libgcc_s.a is an import library; addObjectFile because LLD can't process it via -lgcc_s
-        step.addObjectFile(.{ .cwd_relative = "C:/msys64/ucrt64/lib/libgcc_s.a" });
-        step.linkSystemLibrary("gcc_eh");
+        step.root_module.addObjectFile(.{ .cwd_relative = "C:/msys64/ucrt64/lib/libgcc_s.a" });
+        step.root_module.linkSystemLibrary("gcc_eh", .{});
     }
-    step.linkLibC();
+    step.root_module.link_libc = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ pub fn build(b: *std.Build) void {
     // via, e.g., ../forApollo/zig-out/winX86/lib/forapollo.lib
     //
     // NOTE: addInstallFile (and friends) resolve `.prefix` against
-    // `b.install_path`, not `b.install_prefix` — see std/Build.zig
+    // `b.install_path`, not `b.install_prefix` - see std/Build.zig
     // getInstallPath. install_prefix is bookkeeping only; install_path is
     // the field every install step actually reads.
     // ========================================================================
@@ -176,7 +176,7 @@ pub fn build(b: *std.Build) void {
     b.h_dir = b.pathJoin(&.{ b.install_path, "include" });
 
     const target = b.standardTargetOptions(.{});
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseFast — Debug materializes 'undefined' as real bytes and shipped a 68MB forCV archive)") orelse .ReleaseFast;
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseSafe. Zortran: hot math is gfortran-compiled and unaffected by this, so Zig bounds/overflow checks stay ON and a bad host pointer panics at the C ABI instead of becoming UB. Never Debug for delivery.)") orelse .ReleaseSafe;
     const target_name = getTargetName(target.result);
 
     // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
@@ -233,15 +233,15 @@ pub fn build(b: *std.Build) void {
     // -----------------------------------------------------------------------
 
     // Pass TARGET so Stage 1 (Makefile) writes its per-target Fortran objects to
-    // the same dir Stage 2 reads (prebuilt/<target>/obj) — even when cross-
+    // the same dir Stage 2 reads (prebuilt/<target>/obj) - even when cross-
     // compiling (-Dtarget=...). All 4 targets build without clobbering.
     const make_step = b.addSystemCommand(&.{ "make", "lib", b.fmt("TARGET={s}", .{target_name}) });
 
     // -----------------------------------------------------------------------
-    // Static library: libforapollo.a — assembled by tools/wrap.zig.
+    // Static library: libforapollo.a - assembled by tools/wrap.zig.
     // Zig exports object + this repo's Fortran .o are dup/MOD-localized,
     // ld -r combined, then EVERYTHING except fapo_* is internalized
-    // (fa_* is internal-only per the wiring contract — the wrap enforces it
+    // (fa_* is internal-only per the wiring contract - the wrap enforces it
     // with a gate that fails the build on any leak). Sibling deps (forMath,
     // forCUDA, ...) remain external per the no-bundled-deps canon.
     // -----------------------------------------------------------------------
@@ -286,7 +286,7 @@ pub fn build(b: *std.Build) void {
     wrap_run.addArg("*fapo_*");
     wrap_run.addFileArg(exports_obj.getEmittedBin());
 
-    // Fortran objects always live at prebuilt/<target>/obj — the Makefile
+    // Fortran objects always live at prebuilt/<target>/obj - the Makefile
     // (Stage 1) writes them there per-target, so the make-output path always
     // equals this Stage-2 read path for the SAME target.
     const fortran_obj_dir = b.fmt("prebuilt/{s}/obj", .{target_name});
