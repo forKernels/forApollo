@@ -134,10 +134,17 @@ inline fn deleteFile(path: []const u8) !void {
         std.fs.cwd().deleteFile(path);
 }
 
-/// Argument ORDER differs, not just the io parameter: 0.16 is
-/// (source_dir, source_path, dest_dir, dest_path, io, options) where 0.15.2 is
-/// (source_path, dest_dir, dest_path, options). Getting that wrong still
-/// compiles when both paths are []const u8, and copies the wrong file.
+/// 0.16 INSERTS an `io` parameter before `options`. The four dir/path
+/// parameters keep their order on both toolchains:
+///
+///   0.15.2  copyFile(source_dir, source_path, dest_dir, dest_path, options)
+///   0.16.0  copyFile(source_dir, source_path, dest_dir, dest_path, io, options)
+///
+/// An earlier version of this comment claimed the ORDER changed and that the
+/// wrong order would still compile. Both halves were false, and the claim was
+/// copied into twenty of these files before the macOS agent checked it against
+/// the two signatures rather than trusting it. The code was always right; only
+/// the comment lied.
 inline fn copyFile(src: []const u8, dst: []const u8) !void {
     return if (zig16)
         std.Io.Dir.cwd().copyFile(src, std.Io.Dir.cwd(), dst, cwdIo(), .{})
