@@ -55,7 +55,51 @@ fn objcopyBin(override: ?[]const u8) []const u8 {
 }
 
 // 0.16 replaced std.process.Child with std.process.spawn.
-const run = if (zig16) run16 else run15;
+const runRaw = if (zig16) run16 else run15;
+
+// ---- command-line length guard -------------------------------------------
+//
+// Windows caps a process command line at 32767 characters. wrap passes one
+// `--localize-symbol <name>` / `--keep-global-symbol <name>` PAIR per symbol,
+// so a long `_MOD_` list or a large keep manifest overflows it and
+// CreateProcessW fails with NameTooLong -- the delivery build then produces
+// NO ARCHIVE AT ALL. Measured: forCV broke when its manifest grew 599 -> 921
+// (argv ~43KB); forMath's largest per-object localize list is 25128 bytes
+// against the 32767 cap. Invisible on Linux/macOS (ARG_MAX ~1MB).
+//
+// GNU binutils and llvm (ld / objcopy / ar) all read tail args from a
+// `@response` file, so an over-long command spills args[1..] to one. Short
+// commands stay inline, so an already-built repo is byte-for-byte unchanged.
+//
+// The response file goes in wrap's per-invocation workdir, not the CWD: a
+// repo that builds many packs may run them in parallel and a fixed CWD name
+// would have them clobber each other.
+var g_wrap_workdir: []const u8 = "";
+
+inline fn wrapWriteFile(sub_path: []const u8, data: []const u8) !void {
+    return if (zig16)
+        std.Io.Dir.cwd().writeFile(cwdIo(), .{ .sub_path = sub_path, .data = data })
+    else
+        std.fs.cwd().writeFile(.{ .sub_path = sub_path, .data = data });
+}
+
+fn run(a: std.mem.Allocator, argv: []const []const u8) !void {
+    var total: usize = 0;
+    for (argv) |x| total += x.len + 3;
+    if (total <= 24000 or argv.len <= 2) return runRaw(a, argv);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    for (argv[1..]) |x| {
+        try buf.append(a, '"');
+        try buf.appendSlice(a, x);
+        try buf.appendSlice(a, "\"\n");
+    }
+    const dir = if (g_wrap_workdir.len != 0) g_wrap_workdir else ".";
+    const rsp = try std.fs.path.join(a, &.{ dir, "wrap_args.rsp" });
+    try wrapWriteFile(rsp, buf.items);
+    const at = try std.fmt.allocPrint(a, "@{s}", .{rsp});
+    try runRaw(a, &.{ argv[0], at });
+}
 
 fn run15(a: std.mem.Allocator, argv: []const []const u8) !void {
     var child = std.process.Child.init(argv, a);
@@ -193,6 +237,7 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
     }
     const out_lib = args[1];
     const workdir = args[2];
+    g_wrap_workdir = workdir;
     const inputs = args[4..];
     const objcopy = objcopyBin(objcopy_override);
 
