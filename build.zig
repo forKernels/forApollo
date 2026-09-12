@@ -20,6 +20,20 @@
 
 const std = @import("std");
 
+/// Does `path` exist? Error union, not bool, so the call site keeps its `catch`.
+///
+/// 0.15.2 reaches the filesystem through `std.fs.cwd()`; 0.16 moved directory
+/// handles to `std.Io.Dir` and threads an `Io` through every operation, which is
+/// why `b` has to reach this probe. Branch is on `@hasDecl` -- a feature test,
+/// not a version number.
+fn fileExists(b: *std.Build, path: []const u8) !void {
+    if (comptime @hasDecl(std.fs, "cwd")) {
+        return std.fs.cwd().access(path, .{});
+    } else {
+        return std.Io.Dir.cwd().access(b.graph.io, path, .{});
+    }
+}
+
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
         .macos => "macos",
@@ -63,7 +77,7 @@ const upstream_libs = [_][]const u8{
 // Helper: add sibling library search paths
 // ---------------------------------------------------------------------------
 
-fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []const u8) void {
+fn addSiblingPaths(step: *std.Build.Module, b: *std.Build, target_name: []const u8) void {
     const siblings = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "formath", .path = "../forMath" },
         .{ .name = "forfft", .path = "../forFFT" },
@@ -91,7 +105,7 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
 
 fn linkDeps(
     b: *std.Build,
-    step: *std.Build.Step.Compile,
+    step: *std.Build.Module,
     fortran_obj: []const u8,
     target_name: []const u8,
 ) void {
@@ -103,17 +117,17 @@ fn linkDeps(
 
     // Link forMath component libraries
     for (formath_libs) |lib_name| {
-        step.linkSystemLibrary(lib_name);
+        step.linkSystemLibrary(lib_name, .{});
     }
 
     // Link other upstream libraries
     for (upstream_libs) |lib_name| {
-        step.linkSystemLibrary(lib_name);
+        step.linkSystemLibrary(lib_name, .{});
     }
 
     // System runtime libraries
-    const is_macos = step.rootModuleTarget().os.tag == .macos;
-    const is_linux = step.rootModuleTarget().os.tag == .linux;
+    const is_macos = step.resolved_target.?.result.os.tag == .macos;
+    const is_linux = step.resolved_target.?.result.os.tag == .linux;
     if (is_macos) {
         step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
         step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
@@ -128,9 +142,9 @@ fn linkDeps(
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/14" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
     }
-    step.linkSystemLibrary("gfortran");
-    step.linkSystemLibrary("gomp");
-    step.linkLibC();
+    step.linkSystemLibrary("gfortran", .{});
+    step.linkSystemLibrary("gomp", .{});
+    step.link_libc = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +279,7 @@ pub fn build(b: *std.Build) void {
     // that only surfaces in the consumer.
     for (fortran_kernel_basenames) |name| {
         const obj = b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }));
-        std.fs.cwd().access(obj, .{}) catch std.debug.panic(
+        fileExists(b, obj) catch std.debug.panic(
             "[forApollo] Stage 1 object missing: {s}\n" ++
                 "Run Stage 1 first:\n" ++
                 "    make lib TARGET={s}   # gfortran -> {s}/*.o\n" ++
@@ -314,7 +328,7 @@ pub fn build(b: *std.Build) void {
             .root_module = shared_module,
             .version = .{ .major = 0, .minor = 1, .patch = 0 },
         });
-        linkDeps(b, shared_lib, fortran_archive, target_name);
+        linkDeps(b, shared_lib.root_module, fortran_archive, target_name);
 
 
         const install = b.addInstallArtifact(shared_lib, .{
@@ -337,7 +351,7 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_module,
     });
-    linkDeps(b, unit_tests, fortran_archive, target_name);
+    linkDeps(b, unit_tests.root_module, fortran_archive, target_name);
 
 
     const run_tests = b.addRunArtifact(unit_tests);
