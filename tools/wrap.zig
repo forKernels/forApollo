@@ -419,7 +419,17 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
                 var lit = std.mem.tokenizeScalar(u8, all_syms, '\n');
                 while (lit.next()) |l| {
                     if (std.mem.indexOf(u8, l, " U ") != null) continue;
-                    if (std.mem.endsWith(u8, l, name)) break :blk true;
+                    // Last token, not endsWith on the raw line: nm pipes CRLF on
+                    // winX86, so every line ends "<name>\r" and endsWith(name)
+                    // is false for EVERY symbol. defined_locally was therefore
+                    // always false, silently DOWNGRADING this gate from a failure
+                    // to the cross-repo WARNING -- a real severed binding would
+                    // have shipped with a warning instead of stopping the build.
+                    // Measured in forCV: 38488 bytes of nm output, 923 CR.
+                    var ltoks = std.mem.tokenizeAny(u8, l, " \t\r");
+                    var llast: []const u8 = "";
+                    while (ltoks.next()) |t| llast = t;
+                    if (std.mem.eql(u8, llast, name)) break :blk true;
                 }
                 break :blk false;
             };
