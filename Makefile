@@ -75,6 +75,21 @@ FFLAGS   := $(FFLAGS_OVERFLOW) -O3 -ftree-vectorize -fPIC -cpp -std=f2008 -fall-
 # the same per-target obj dir Stage 2 reads — all 4 targets build, no clobber.
 #
 UNAME_S  := $(shell uname -s)
+
+# macOS minimum-version pin (2026-09-12). Homebrew's gfortran is built as
+# aarch64-apple-darwin25 and stamps LC_BUILD_VERSION minos 28.0 into every
+# object -- AHEAD of both the installed SDK (27.0) and what Zig emits for a
+# native build (27.0). Apple's ld then warns "object file was built for newer
+# 'macOS' version (28.0) than being linked (27.0)" once per Fortran object, and
+# the delivered archive claims a floor above the shipping OS.
+#
+# Appended to FC, not FFLAGS, on purpose: several fleet Makefiles assign FFLAGS
+# inside conditional branches where a single `FFLAGS +=` can be clobbered by a
+# later `FFLAGS =`. Every gfortran call goes through $(FC), so this cannot be
+# missed. A cross-compile branch that reassigns FC drops it, which is correct.
+ifeq ($(UNAME_S),Darwin)
+    FC += -mmacosx-version-min=27.0
+endif
 UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
