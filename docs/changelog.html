@@ -20,6 +20,70 @@ footer{color:#6e7681;font-size:.8rem;margin-top:3rem;border-top:1px solid #21262
 <h1>forApollo — Changelog</h1>
 <div class="sub">Running log of code changes. Newest first.</div>
 
+<h2>2026-09-13 — Time scales repointed to forTime; <code>forapollo_time.f90</code> retired</h2>
+
+<h3><span class="tag fix">change</span>One leap-second table, and it is forTime's</h3>
+<p><code>forapollo_time.f90</code> duplicated forTime's scales: 15 <code>fa_time_*</code> routines and three copies of
+the 28-entry leap-second table. It is deleted. The Zig dead chain that led into it is deleted with it:
+15 externs in <code>fortran.zig</code>, <code>timeGmst</code>/<code>timeCalToJd</code>/<code>timeUtcToTai</code>
+in <code>dispatch.zig</code>, and the Makefile and Stage 2 object-gate entries. The three public exports keep their
+names and signatures, and each now calls forTime's C ABI directly:</p>
+<ul>
+<li><code>fapo_time_gmst</code> → <code>ftim_gmst</code></li>
+<li><code>fapo_time_cal_to_jd</code> → <code>ftim_jd_from_civil_cal</code>, calendar 0 (proleptic Gregorian)</li>
+<li><code>fapo_time_utc_to_tai</code> → <code>ftim_mjd_from_jd</code>, <code>ftim_utc_to_tai</code>, <code>ftim_jd_from_mjd</code></li>
+</ul>
+<p>The <code>ftim_*</code> externs sit at the call site in <code>exports.zig</code>. No forTime module is imported,
+no forTime source is compiled, and there is no wrapper.</p>
+
+<h3>Wiring: forTime's prebuilt binary, by path</h3>
+<p>The old <code>-lfortime</code> by-name lookup searched <code>prebuilt/&lt;t&gt;/lib</code> and <code>zig-out</code>.
+Neither is where forTime delivers, and nothing called forTime anyway. Both the lookup and the search paths are gone.
+<code>zig build shared</code> and <code>zig build test</code> now link
+<code>../forTime/prebuilt/&lt;short&gt;/libfortime.a</code> by path (<code>-Dfortime-archive=</code> overrides it). A
+missing archive fails those steps with an explicit message. The static delivery never links forTime and is not gated
+on it.</p>
+<div class="note">
+<strong>Consumers: link <code>libfortime.a</code> beside <code>libforapollo.a</code>.</strong> The archive's public
+name set is unchanged (66 <code>fapo_*</code>, compared in both directions). Its undefined set gains exactly
+<code>ftim_gmst</code>, <code>ftim_jd_from_civil_cal</code>, <code>ftim_mjd_from_jd</code>,
+<code>ftim_jd_from_mjd</code> and <code>ftim_utc_to_tai</code>. <code>ftim_jd_from_civil_cal</code> first shipped in
+forTime <code>99160b5</code>.
+</div>
+<div class="note">
+<strong>No local may escape to the extern.</strong> The first cut passed <code>&amp;tai_sec</code> to
+<code>ftim_utc_to_tai</code>. In ReleaseSafe that plants a stack-protector canary: the archive gained
+<code>U __stack_chk_fail</code>, <code>U __stack_chk_guard</code> and a global <code>.refptr.__stack_chk_guard</code>,
+which every consumer, MSVC included, would have had to resolve. The export now passes the caller's own
+out-pointer.
+</div>
+
+<h3>Behaviour, measured</h3>
+<p>Old and new exports were called with identical inputs and every result compared. The inputs were dense: every
+leap-second boundary ±1 day, the 1582 reform, JD 0 through 2150, and valid, invalid and negative-year civil dates.
+That gave 8,086 public calls, plus 38,785 calls to the 12 unexported routines against their forTime equivalents.
+Each difference was then assigned to a mechanism, by reimplementing the old kernel and forTime independently and
+requiring both reimplementations to reproduce the measured values. None was left unexplained.</p>
+<ul>
+<li><code>fapo_time_utc_to_tai</code>: from 1972 on, identical or within 1 ULP of the JD (≤ 40 µs).
+<strong>Before 1972-01-01 the result moves +10 s</strong>, because forTime applies TAI−UTC = 10 s there and the old
+table applied 0 s.</li>
+<li><code>fapo_time_gmst</code>: same IAU 1982 model, restated in degrees with rounded coefficients. The result moves by
+≤ 2.4e-9 rad (34 µs) over 1900–2100, and by at most 1.8e-7 rad at JD 0. A non-finite JD now reports
+<code>info = 3</code>.</li>
+<li><code>fapo_time_cal_to_jd</code>: 1,357 valid dates are bit-identical. 80 negative-year dates are now exact; the
+old Meeus integer truncation put them up to one day off. 118 impossible inputs now give <code>info = 3</code> and
+<code>jd = NaN</code>, where the old kernel returned a rolled-over JD with <code>info = 0</code>.</li>
+</ul>
+
+<h3><span class="tag open">open</span>forTime defects found (not reachable through forApollo's exports)</h3>
+<ul>
+<li><code>ftim_tt_to_tdb</code> evaluates its Fairhead–Bretagnon series with t in Julian centuries. The series'
+frequencies are per millennium, so the result is off by up to 3.3 ms.</li>
+<li><code>ftim_tai_to_utc</code>: for a TAI instant inside an inserted leap second, <code>utc = tai − (d − 1)</code>
+returns a time 2 s late, and the result does not satisfy its own <code>utc + lookup(utc) == tai</code> check.</li>
+</ul>
+
 <h2>2026-08-05 — Stage 1 made external: <code>make</code> shell-out removed, object gate added</h2>
 
 <h3><span class="tag fix">fix</span>build.zig no longer invokes <code>make</code></h3>

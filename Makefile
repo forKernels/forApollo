@@ -130,7 +130,11 @@ LIB          := $(PLAT_LIB_DIR)/libforapollo_fortran.a
 #   Layer 0 — Models (no intra-Apollo deps): dynamics, observe
 #   Layer 1 — Engine core: estimate, propagate
 #   Layer 2 — Engine aux: guidance, coords
-#   Layer 3 — Domain utilities: astro, environ, time
+#   Layer 3 — Domain utilities: astro, environ
+#
+# Time scales, calendars and leap seconds are forTime's (ftim_*, linked as
+# ../forTime/prebuilt/<target>/libfortime.a); forapollo_time.f90 was retired
+# 2026-09-13.
 #
 SRCS := \
     $(SRC_DIR)/forapollo_dynamics.f90   \
@@ -140,8 +144,7 @@ SRCS := \
     $(SRC_DIR)/forapollo_guidance.f90   \
     $(SRC_DIR)/forapollo_coords.f90     \
     $(SRC_DIR)/forapollo_astro.f90      \
-    $(SRC_DIR)/forapollo_environ.f90    \
-    $(SRC_DIR)/forapollo_time.f90
+    $(SRC_DIR)/forapollo_environ.f90
 
 # Derive object file names: src/fortran/forapollo_X.f90 → build/obj/forapollo_X.o
 OBJS := $(patsubst $(SRC_DIR)/%.f90,$(OBJ_DIR)/%.o,$(SRCS))

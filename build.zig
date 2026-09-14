@@ -70,7 +70,6 @@ const upstream_libs = [_][]const u8{
     "foropt",
     "forternary",
     "forGraph",
-    "fortime",
 };
 
 // ---------------------------------------------------------------------------
@@ -84,7 +83,6 @@ fn addSiblingPaths(step: *std.Build.Module, b: *std.Build, target_name: []const 
         .{ .name = "foropt", .path = "../forOpt" },
         .{ .name = "forternary", .path = "../forTernary" },
         .{ .name = "forgraph", .path = "../forGraph" },
-        .{ .name = "fortime", .path = "../forTime" },
         .{ .name = "forcuda", .path = "../forCUDA" },
     };
 
@@ -108,6 +106,7 @@ fn linkDeps(
     step: *std.Build.Module,
     fortran_obj: []const u8,
     target_name: []const u8,
+    fortime_archive: []const u8,
 ) void {
     // Fortran kernel archive (stage-1 output)
     step.addObjectFile(b.path(fortran_obj));
@@ -124,6 +123,11 @@ fn linkDeps(
     for (upstream_libs) |lib_name| {
         step.linkSystemLibrary(lib_name, .{});
     }
+
+    // forTime: the PREBUILT archive, by path, side by side -- never its source,
+    // never a by-name search. fapo_time_* reach ftim_* through call-site externs
+    // in src/zig/exports.zig.
+    step.addObjectFile(.{ .cwd_relative = fortime_archive });
 
     // System runtime libraries
     const is_macos = step.resolved_target.?.result.os.tag == .macos;
@@ -206,6 +210,29 @@ pub fn build(b: *std.Build) void {
         b.fmt("build/{s}/lib/libforapollo_fortran.a", .{target_name});
 
     // -----------------------------------------------------------------------
+    // forTime -- linked as its PREBUILT archive, side by side
+    // -----------------------------------------------------------------------
+    // fapo_time_* call forTime's C ABI (ftim_*) through call-site externs, so the
+    // static delivery carries `U ftim_*` and whatever LINKS forApollo (the shared
+    // lib, the tests, every consumer) needs libfortime.a beside it. The default is
+    // the flat sibling canon, which exists only while ../forTime is checked out
+    // on this target's branch: main carries no prebuilts.
+    const fortime_archive = b.option(
+        []const u8,
+        "fortime-archive",
+        "forTime's prebuilt static archive (default ../forTime/prebuilt/<target>/libfortime.a)",
+    ) orelse b.pathFromRoot(b.fmt("../forTime/prebuilt/{s}/libfortime.a", .{target_name}));
+    // A missing archive fails LOUDLY, but only on the steps that link it: the
+    // static delivery (`zig build`) never links forTime and is not blocked.
+    const fortime_missing: ?*std.Build.Step = if (fileExists(b, fortime_archive)) null else |_| &b.addFail(b.fmt(
+        "[forApollo] forTime prebuilt archive missing: {s}\n" ++
+            "fapo_time_* call forTime's C ABI, so linking forApollo needs libfortime.a.\n" ++
+            "Check out ../forTime on its {s} branch (prebuilt/{s}/ lives there),\n" ++
+            "or pass -Dfortime-archive=<path to libfortime.a>.\n",
+        .{ fortime_archive, target_name, target_name },
+    )).step;
+
+    // -----------------------------------------------------------------------
     // Stage 1: Build Fortran kernels via make (if not using prebuilt)
     // -----------------------------------------------------------------------
 
@@ -271,7 +298,7 @@ pub fn build(b: *std.Build) void {
     const fortran_kernel_basenames = [_][]const u8{
         "forapollo_dynamics", "forapollo_observe",  "forapollo_estimate",
         "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
-        "forapollo_astro",     "forapollo_environ",  "forapollo_time",
+        "forapollo_astro",     "forapollo_environ",
     };
     // Stage 1 output is Stage 2 input, whether Stage 1 just ran or the objects were
     // committed (-Duse-prebuilt). A missing object is a HARD failure: wrapping zero
@@ -328,7 +355,8 @@ pub fn build(b: *std.Build) void {
             .root_module = shared_module,
             .version = .{ .major = 0, .minor = 1, .patch = 0 },
         });
-        linkDeps(b, shared_lib.root_module, fortran_archive, target_name);
+        linkDeps(b, shared_lib.root_module, fortran_archive, target_name, fortime_archive);
+        if (fortime_missing) |fail| shared_lib.step.dependOn(fail);
 
 
         const install = b.addInstallArtifact(shared_lib, .{
@@ -351,7 +379,8 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_module,
     });
-    linkDeps(b, unit_tests.root_module, fortran_archive, target_name);
+    linkDeps(b, unit_tests.root_module, fortran_archive, target_name, fortime_archive);
+    if (fortime_missing) |fail| unit_tests.step.dependOn(fail);
 
 
     const run_tests = b.addRunArtifact(unit_tests);

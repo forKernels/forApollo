@@ -693,17 +693,3 @@ pub fn environGravityJ2(r_vec: [*]const f64, mu: f64, J2: f64, R_eq: f64, g_vec:
 pub fn environGeodesicVincenty(lat1: f64, lon1: f64, lat2: f64, lon2: f64, a_body: f64, f_body: f64, dist: *f64, az1: *f64, az2: *f64, info: *i32) void {
     fortran.fa_environ_geodesic_vincenty(lat1, lon1, lat2, lon2, a_body, f_body, dist, az1, az2, info);
 }
-
-// ============================================================================
-// Time dispatch — all forward to Fortran
-// ============================================================================
-
-pub fn timeGmst(ut1_jd: f64, gmst_rad: *f64, info: *i32) void {
-    fortran.fa_time_gmst(ut1_jd, gmst_rad, info);
-}
-pub fn timeCalToJd(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64, jd: *f64, info: *i32) void {
-    fortran.fa_time_cal_to_jd(year, month, day, hour, minute, second, jd, info);
-}
-pub fn timeUtcToTai(utc_jd: f64, tai_jd: *f64, info: *i32) void {
-    fortran.fa_time_utc_to_tai(utc_jd, tai_jd, info);
-}
