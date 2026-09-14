@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>forApollo — Changelog</title>
+<style>
+body{background:#0d1117;color:#c9d1d9;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:2rem 1.2rem 5rem}
+.wrap{max-width:920px;margin:0 auto}
+h1{font-size:1.6rem;margin:.2em 0}.sub{color:#8b949e}
+h2{font-size:1.15rem;margin:2.2rem 0 .2rem;border-bottom:1px solid #21262d;padding-bottom:.35rem}
+h3{font-size:.95rem;margin:1.4rem 0 .3rem;color:#e6edf3}
+code{background:#161b22;padding:.05em .35em;border-radius:4px;color:#79c0ff;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.88em}
+ul{padding-left:1.15rem}li{margin:.22rem 0;color:#adbac7}
+.tag{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;padding:.13em .5em;border-radius:3px;margin-right:.5em}
+.fix{background:#12261a;color:#3fb950;border:1px solid #238636}
+.open{background:#2b2417;color:#d29922;border:1px solid #9e6a03}
+.note{background:#161b22;border-left:3px solid #30363d;padding:.7rem 1rem;margin:.9rem 0;color:#adbac7;font-size:.92rem}
+footer{color:#6e7681;font-size:.8rem;margin-top:3rem;border-top:1px solid #21262d;padding-top:1rem}
+</style></head><body><div class="wrap">
+
+<h1>forApollo — Changelog</h1>
+<div class="sub">Running log of code changes. Newest first.</div>
+
+<h2>2026-09-13 — Time scales repointed to forTime; <code>forapollo_time.f90</code> retired</h2>
+
+<h3><span class="tag fix">change</span>One leap-second table, and it is forTime's</h3>
+<p><code>forapollo_time.f90</code> duplicated forTime's scales: 15 <code>fa_time_*</code> routines and three copies of
+the 28-entry leap-second table. It is deleted. The Zig dead chain that led into it is deleted with it:
+15 externs in <code>fortran.zig</code>, <code>timeGmst</code>/<code>timeCalToJd</code>/<code>timeUtcToTai</code>
+in <code>dispatch.zig</code>, and the Makefile and Stage 2 object-gate entries. The three public exports keep their
+names and signatures, and each now calls forTime's C ABI directly:</p>
+<ul>
+<li><code>fapo_time_gmst</code> → <code>ftim_gmst</code></li>
+<li><code>fapo_time_cal_to_jd</code> → <code>ftim_jd_from_civil_cal</code>, calendar 0 (proleptic Gregorian)</li>
+<li><code>fapo_time_utc_to_tai</code> → <code>ftim_mjd_from_jd</code>, <code>ftim_utc_to_tai</code>, <code>ftim_jd_from_mjd</code></li>
+</ul>
+<p>The <code>ftim_*</code> externs sit at the call site in <code>exports.zig</code>. No forTime module is imported,
+no forTime source is compiled, and there is no wrapper.</p>
+
+<h3>Wiring: forTime's prebuilt binary, by path</h3>
+<p>The old <code>-lfortime</code> by-name lookup searched <code>prebuilt/&lt;t&gt;/lib</code> and <code>zig-out</code>.
+Neither is where forTime delivers, and nothing called forTime anyway. Both the lookup and the search paths are gone.
+<code>zig build shared</code> and <code>zig build test</code> now link
+<code>../forTime/prebuilt/&lt;short&gt;/libfortime.a</code> by path (<code>-Dfortime-archive=</code> overrides it). A
+missing archive fails those steps with an explicit message. The static delivery never links forTime and is not gated
+on it.</p>
+<div class="note">
+<strong>Consumers: link <code>libfortime.a</code> beside <code>libforapollo.a</code>.</strong> The archive's public
+name set is unchanged (66 <code>fapo_*</code>, compared in both directions). Its undefined set gains exactly
+<code>ftim_gmst</code>, <code>ftim_jd_from_civil_cal</code>, <code>ftim_mjd_from_jd</code>,
+<code>ftim_jd_from_mjd</code> and <code>ftim_utc_to_tai</code>. <code>ftim_jd_from_civil_cal</code> first shipped in
+forTime <code>99160b5</code>.
+</div>
+<div class="note">
+<strong>No local may escape to the extern.</strong> The first cut passed <code>&amp;tai_sec</code> to
+<code>ftim_utc_to_tai</code>. In ReleaseSafe that plants a stack-protector canary: the archive gained
+<code>U __stack_chk_fail</code>, <code>U __stack_chk_guard</code> and a global <code>.refptr.__stack_chk_guard</code>,
+which every consumer, MSVC included, would have had to resolve. The export now passes the caller's own
+out-pointer.
+</div>
+
+<h3>Behaviour, measured</h3>
+<p>Old and new exports were called with identical inputs and every result compared. The inputs were dense: every
+leap-second boundary ±1 day, the 1582 reform, JD 0 through 2150, and valid, invalid and negative-year civil dates.
+That gave 8,086 public calls, plus 38,785 calls to the 12 unexported routines against their forTime equivalents.
+Each difference was then assigned to a mechanism, by reimplementing the old kernel and forTime independently and
+requiring both reimplementations to reproduce the measured values. None was left unexplained.</p>
+<ul>
+<li><code>fapo_time_utc_to_tai</code>: from 1972 on, identical or within 1 ULP of the JD (≤ 40 µs).
+<strong>Before 1972-01-01 the result moves +10 s</strong>, because forTime applies TAI−UTC = 10 s there and the old
+table applied 0 s.</li>
+<li><code>fapo_time_gmst</code>: same IAU 1982 model, restated in degrees with rounded coefficients. The result moves by
+≤ 2.4e-9 rad (34 µs) over 1900–2100, and by at most 1.8e-7 rad at JD 0. A non-finite JD now reports
+<code>info = 3</code>.</li>
+<li><code>fapo_time_cal_to_jd</code>: 1,357 valid dates are bit-identical. 80 negative-year dates are now exact; the
+old Meeus integer truncation put them up to one day off. 118 impossible inputs now give <code>info = 3</code> and
+<code>jd = NaN</code>, where the old kernel returned a rolled-over JD with <code>info = 0</code>.</li>
+</ul>
+
+<h3><span class="tag open">open</span>forTime defects found (not reachable through forApollo's exports)</h3>
+<ul>
+<li><code>ftim_tt_to_tdb</code> evaluates its Fairhead–Bretagnon series with t in Julian centuries. The series'
+frequencies are per millennium, so the result is off by up to 3.3 ms.</li>
+<li><code>ftim_tai_to_utc</code>: for a TAI instant inside an inserted leap second, <code>utc = tai − (d − 1)</code>
+returns a time 2 s late, and the result does not satisfy its own <code>utc + lookup(utc) == tai</code> check.</li>
+</ul>
+
+<h2>2026-08-05 — Stage 1 made external: <code>make</code> shell-out removed, object gate added</h2>
+
+<h3><span class="tag fix">fix</span>build.zig no longer invokes <code>make</code></h3>
+<p>Stage 1 was reached by shelling out to <code>make</code> from <code>build.zig</code>
+(<code>make lib TARGET=&lt;target&gt;</code>), with 3 steps depending on it. That ordered the build correctly but
+handed Zig a stage its build graph cannot see.</p>
+
+<div class="note">
+<strong>Why the shell-out is the problem, not just the ordering.</strong> Zig's build system is a dependency
+graph, not a script runner. A <code>Run</code> step declares no inputs, so Zig cannot hash the
+<code>.f90</code> sources or the <code>.o</code> outputs — it therefore cannot answer "is Stage 1 stale?" and
+either re-runs <code>make</code> unconditionally or never. Cross-compilation breaks too, because the
+<code>make</code> invocation knows nothing about the Zig target.
+</div>
+
+<p>Stage 1 is now fully external and Stage 2 gates on the objects:</p>
+<pre style="background:#161b22;padding:.8rem 1rem;border-radius:6px;overflow-x:auto;color:#adbac7"><code>make lib TARGET=&lt;target&gt;   # Stage 1
+zig build          # Stage 2</code></pre>
+
+<h3>Missing objects are a hard failure</h3>
+<p>A config-time gate checks every expected Stage 1 object and panics with copy-pasteable instructions when one
+is absent. Wrapping zero Fortran members yields an archive that links but is missing every kernel — a failure
+that only surfaces at runtime in the consumer, far from the cause.</p>
+<p>The gate is unconditional: the objects are consumed whether Stage 1 just ran or they were committed under <code>-Duse-prebuilt</code>, so either way they must be present.</p>
+<div class="note">
+<strong>The gate probes via <code>b.pathFromRoot()</code>, not <code>std.fs.cwd()</code>.</strong>
+<code>build()</code> runs for every package in the graph, but the process cwd is always the <em>root</em>
+package's directory — so a relative probe inside a library's <code>build.zig</code> looks inside the
+<strong>consumer's</strong> tree when that library is built as a dependency. A first cut of this gate used
+<code>cwd</code> and broke forAI's build via forNet before being caught.
+</div>
+
+<footer>forApollo — The Fantastic Planet</footer>
+</div></body></html>

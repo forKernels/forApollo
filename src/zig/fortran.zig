@@ -596,23 +596,3 @@ pub extern "c" fn fa_environ_srp(r_sat: [*]const f64, r_sun: [*]const f64, A_ove
 pub extern "c" fn fa_environ_geodesic_vincenty(lat1: f64, lon1: f64, lat2: f64, lon2: f64, a_body: f64, f_body: f64, dist: *f64, az1: *f64, az2: *f64, info: *i32) void;
 pub extern "c" fn fa_environ_geodesic_haversine(lat1: f64, lon1: f64, lat2: f64, lon2: f64, R_body: f64, dist: *f64, info: *i32) void;
 pub extern "c" fn fa_environ_magnetic_dipole(r_vec: [*]const f64, m_dipole: [*]const f64, B_vec: [*]f64, info: *i32) void;
-
-// ============================================================================
-// Time (forapollo_time.f90)
-// ============================================================================
-
-pub extern "c" fn fa_time_jd_to_mjd(jd: f64, mjd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_mjd_to_jd(mjd: f64, jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_unix_to_jd(unix_sec: f64, jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_jd_to_unix(jd: f64, unix_sec: *f64, info: *i32) void;
-pub extern "c" fn fa_time_utc_to_tai(utc_jd: f64, tai_jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_tai_to_utc(tai_jd: f64, utc_jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_tai_to_tt(tai_jd: f64, tt_jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_tt_to_tai(tt_jd: f64, tai_jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_tt_to_tdb(tt_jd: f64, tdb_jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_utc_to_gps(utc_jd: f64, gps_sec: *f64, info: *i32) void;
-pub extern "c" fn fa_time_gps_to_utc(gps_sec: f64, utc_jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_gmst(ut1_jd: f64, gmst_rad: *f64, info: *i32) void;
-pub extern "c" fn fa_time_cal_to_jd(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64, jd: *f64, info: *i32) void;
-pub extern "c" fn fa_time_jd_to_cal(jd: f64, year: *i32, month: *i32, day: *i32, hour: *i32, minute: *i32, second: *f64, info: *i32) void;
-pub extern "c" fn fa_time_leap_seconds(utc_jd: f64, dt_ls: *f64, info: *i32) void;

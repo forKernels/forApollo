@@ -24,6 +24,22 @@
 // argv: wrap <out_lib> <workdir> <keep_globs(comma-sep)|@manifest-file> <obj>...
 //   @file form: one glob per line, '#' comments and blank lines ignored.
 const std = @import("std");
+
+/// 0.16 removed std.process.getEnvVarOwned; its replacement reads a
+/// std.process.Environ threaded from main, which a host tool invoked by
+/// build.zig does not receive. std.c.getenv is present and identically typed on
+/// both toolchains and needs no Io -- the same floor forIO's iocompat.getEnv and
+/// forTime's clock stand on.
+fn envOwned(gpa: std.mem.Allocator, name: []const u8) ?[]u8 {
+    if (comptime @hasDecl(std.process, "getEnvVarOwned"))
+        return std.process.getEnvVarOwned(gpa, name) catch null;
+    var nbuf: [256]u8 = undefined;
+    if (name.len >= nbuf.len) return null;
+    @memcpy(nbuf[0..name.len], name);
+    nbuf[name.len] = 0;
+    const v = std.c.getenv(@ptrCast(&nbuf)) orelse return null;
+    return gpa.dupe(u8, std.mem.span(v)) catch null;
+}
 const builtin = @import("builtin");
 
 // objcopy is `llvm-objcopy` on macOS (no GNU objcopy); GNU `objcopy` elsewhere.
@@ -210,7 +226,7 @@ fn main15() !void {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     const args = try std.process.argsAlloc(a);
-    const objcopy_override = std.process.getEnvVarOwned(a, "OBJCOPY") catch null;
+    const objcopy_override = envOwned(a, "OBJCOPY");
     return wrapMain(a, args, objcopy_override);
 }
 

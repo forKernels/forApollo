@@ -23,6 +23,20 @@ const std = @import("std");
 // Branch name = delivery dir name. Each target branch hardcodes its own.
 const BRANCH_NAME = "winX86";
 
+/// Does `path` exist? Error union, not bool, so the call site keeps its `catch`.
+///
+/// 0.15.2 reaches the filesystem through `std.fs.cwd()`; 0.16 moved directory
+/// handles to `std.Io.Dir` and threads an `Io` through every operation, which is
+/// why `b` has to reach this probe. Branch is on `@hasDecl` -- a feature test,
+/// not a version number.
+fn fileExists(b: *std.Build, path: []const u8) !void {
+    if (comptime @hasDecl(std.fs, "cwd")) {
+        return std.fs.cwd().access(path, .{});
+    } else {
+        return std.Io.Dir.cwd().access(b.graph.io, path, .{});
+    }
+}
+
 // forKernels branch-name delivery canon - winX86/linX86/thor/macos.
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
@@ -60,21 +74,19 @@ const upstream_libs = [_][]const u8{
     "foropt",
     "forternary",
     "forGraph",
-    "fortime",
 };
 
 // ---------------------------------------------------------------------------
 // Helper: add sibling library search paths
 // ---------------------------------------------------------------------------
 
-fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []const u8) void {
+fn addSiblingPaths(step: *std.Build.Module, b: *std.Build, target_name: []const u8) void {
     const siblings = [_]struct { name: []const u8, path: []const u8 }{
         .{ .name = "formath", .path = "../forMath" },
         .{ .name = "forfft", .path = "../forFFT" },
         .{ .name = "foropt", .path = "../forOpt" },
         .{ .name = "forternary", .path = "../forTernary" },
         .{ .name = "forgraph", .path = "../forGraph" },
-        .{ .name = "fortime", .path = "../forTime" },
         .{ .name = "forcuda", .path = "../forCUDA" },
     };
 
@@ -82,14 +94,14 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
         const sibling = dep.path;
         // Branch-name delivery (forKernels standard): each sibling is on its
         // matching target branch and delivers to zig-out/<branch>/lib.
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
         // forMath uses src/zig/zig-out/<branch>/lib for its module libs.
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/src/zig/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/src/zig/zig-out/" ++ BRANCH_NAME ++ "/lib", .{sibling}) });
         // Platform-name fallback for siblings not yet on the delivery standard.
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
     }
 }
 
@@ -99,59 +111,65 @@ fn addSiblingPaths(step: *std.Build.Step.Compile, b: *std.Build, target_name: []
 
 fn linkDeps(
     b: *std.Build,
-    step: *std.Build.Step.Compile,
+    step: *std.Build.Module,
     fortran_obj: []const u8,
     target_name: []const u8,
+    fortime_archive: []const u8,
 ) void {
     // Fortran kernel archive (stage-1 output)
-    step.root_module.addObjectFile(b.path(fortran_obj));
+    step.addObjectFile(b.path(fortran_obj));
 
     // Sibling search paths
     addSiblingPaths(step, b, target_name);
 
     // Link forMath component libraries
     for (formath_libs) |lib_name| {
-        step.root_module.linkSystemLibrary(lib_name, .{});
+        step.linkSystemLibrary(lib_name, .{});
     }
 
     // Link other upstream libraries
     for (upstream_libs) |lib_name| {
-        step.root_module.linkSystemLibrary(lib_name, .{});
+        step.linkSystemLibrary(lib_name, .{});
     }
 
+    // forTime: the PREBUILT archive, by path, side by side -- never its source,
+    // never a by-name search. fapo_time_* reach ftim_* through call-site externs
+    // in src/zig/exports.zig.
+    step.addObjectFile(.{ .cwd_relative = fortime_archive });
+
     // System runtime libraries
-    const tgt = step.rootModuleTarget();
-    const is_macos = tgt.os.tag == .macos;
-    const is_linux = tgt.os.tag == .linux;
-    const is_windows = tgt.os.tag == .windows;
+    const os_tag = step.resolved_target.?.result.os.tag;
+    const is_macos = os_tag == .macos;
+    const is_linux = os_tag == .linux;
+    const is_windows = os_tag == .windows;
     if (is_macos) {
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
+        step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/current" });
+        step.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib/gcc/15" });
     } else if (is_linux) {
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("deps/{s}", .{target_name}) });
-        step.root_module.addLibraryPath(.{ .cwd_relative = b.fmt("deps/syslibs/{s}", .{target_name}) });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("deps/{s}", .{target_name}) });
+        step.addLibraryPath(.{ .cwd_relative = b.fmt("deps/syslibs/{s}", .{target_name}) });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/aarch64-linux-gnu" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
+        step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
     } else if (is_windows) {
         // Windows (MSYS2 UCRT64): gfortran runtime - GCC 15.2.0
-        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
         // MINGW64 fallback
-        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib" });
-        step.root_module.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib" });
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
     }
-    step.root_module.linkSystemLibrary("gfortran", .{});
-    step.root_module.linkSystemLibrary("gomp", .{});
+    step.linkSystemLibrary("gfortran", .{});
+    step.linkSystemLibrary("gomp", .{});
     if (is_windows) {
-        step.root_module.linkSystemLibrary("quadmath", .{});
+        step.linkSystemLibrary("quadmath", .{});
         // libgcc_s.a is an import library; addObjectFile because LLD can't process it via -lgcc_s
-        step.root_module.addObjectFile(.{ .cwd_relative = "C:/msys64/ucrt64/lib/libgcc_s.a" });
-        step.root_module.linkSystemLibrary("gcc_eh", .{});
+        step.addObjectFile(.{ .cwd_relative = "C:/msys64/ucrt64/lib/libgcc_s.a" });
+        step.linkSystemLibrary("gcc_eh", .{});
     }
-    step.root_module.link_libc = true;
+    step.link_libc = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,13 +247,37 @@ pub fn build(b: *std.Build) void {
         b.fmt("build/{s}/lib/libforapollo_fortran.a", .{target_name});
 
     // -----------------------------------------------------------------------
+    // forTime -- linked as its PREBUILT archive, side by side
+    // -----------------------------------------------------------------------
+    // fapo_time_* call forTime's C ABI (ftim_*) through call-site externs, so the
+    // static delivery carries `U ftim_*` and whatever LINKS forApollo (the shared
+    // lib, the tests, every consumer) needs libfortime.a beside it. The default is
+    // the flat sibling canon, which exists only while ../forTime is checked out
+    // on this target's branch: main carries no prebuilts.
+    const fortime_archive = b.option(
+        []const u8,
+        "fortime-archive",
+        "forTime's prebuilt static archive (default ../forTime/prebuilt/<target>/libfortime.a)",
+    ) orelse b.pathFromRoot(b.fmt("../forTime/prebuilt/{s}/libfortime.a", .{target_name}));
+    // A missing archive fails LOUDLY, but only on the steps that link it: the
+    // static delivery (`zig build`) never links forTime and is not blocked.
+    const fortime_missing: ?*std.Build.Step = if (fileExists(b, fortime_archive)) null else |_| &b.addFail(b.fmt(
+        "[forApollo] forTime prebuilt archive missing: {s}\n" ++
+            "fapo_time_* call forTime's C ABI, so linking forApollo needs libfortime.a.\n" ++
+            "Check out ../forTime on its {s} branch (prebuilt/{s}/ lives there),\n" ++
+            "or pass -Dfortime-archive=<path to libfortime.a>.\n",
+        .{ fortime_archive, target_name, target_name },
+    )).step;
+
+    // -----------------------------------------------------------------------
     // Stage 1: Build Fortran kernels via make (if not using prebuilt)
     // -----------------------------------------------------------------------
 
-    // Pass TARGET so Stage 1 (Makefile) writes its per-target Fortran objects to
-    // the same dir Stage 2 reads (prebuilt/<target>/obj) - even when cross-
-    // compiling (-Dtarget=...). All 4 targets build without clobbering.
-    const make_step = b.addSystemCommand(&.{ "make", "lib", b.fmt("TARGET={s}", .{target_name}) });
+    // Stage 1 is external and runs BEFORE this: `make lib TARGET=<target>` writes
+    // per-target Fortran objects to the same dir Stage 2 reads
+    // (prebuilt/<target>/obj) — even when cross-compiling (-Dtarget=...). All 4
+    // targets build without clobbering. build.zig does NOT invoke make; the
+    // object-presence gate below enforces the ordering instead.
 
     // -----------------------------------------------------------------------
     // Static library: libforapollo.a - assembled by tools/wrap.zig.
@@ -293,14 +335,22 @@ pub fn build(b: *std.Build) void {
     const fortran_kernel_basenames = [_][]const u8{
         "forapollo_dynamics", "forapollo_observe",  "forapollo_estimate",
         "forapollo_propagate", "forapollo_guidance", "forapollo_coords",
-        "forapollo_astro",     "forapollo_environ",  "forapollo_time",
+        "forapollo_astro",     "forapollo_environ",
     };
+    // Stage 1 output is Stage 2 input, whether Stage 1 just ran or the objects were
+    // committed (-Duse-prebuilt). A missing object is a HARD failure: wrapping zero
+    // Fortran members yields an archive that links but is missing every kernel, and
+    // that only surfaces in the consumer.
     for (fortran_kernel_basenames) |name| {
-        wrap_run.addArg(b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name })));
-    }
-
-    if (!use_prebuilt) {
-        wrap_run.step.dependOn(&make_step.step);
+        const obj = b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }));
+        fileExists(b, obj) catch std.debug.panic(
+            "[forApollo] Stage 1 object missing: {s}\n" ++
+                "Run Stage 1 first:\n" ++
+                "    make lib TARGET={s}   # gfortran -> {s}/*.o\n" ++
+                "    zig build             # wrap them into the archive\n",
+            .{ obj, target_name, fortran_obj_dir },
+        );
+        wrap_run.addArg(obj);
     }
 
     // Compile GPU kernels via nvfortran (opt-in via -Dgpu, Thor/Blackwell only)
@@ -342,11 +392,9 @@ pub fn build(b: *std.Build) void {
             .root_module = shared_module,
             .version = .{ .major = 0, .minor = 1, .patch = 0 },
         });
-        linkDeps(b, shared_lib, fortran_archive, target_name);
+        linkDeps(b, shared_lib.root_module, fortran_archive, target_name, fortime_archive);
+        if (fortime_missing) |fail| shared_lib.step.dependOn(fail);
 
-        if (!use_prebuilt) {
-            shared_lib.step.dependOn(&make_step.step);
-        }
 
         const install = b.addInstallArtifact(shared_lib, .{
         });
@@ -368,11 +416,9 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_module,
     });
-    linkDeps(b, unit_tests, fortran_archive, target_name);
+    linkDeps(b, unit_tests.root_module, fortran_archive, target_name, fortime_archive);
+    if (fortime_missing) |fail| unit_tests.step.dependOn(fail);
 
-    if (!use_prebuilt) {
-        unit_tests.step.dependOn(&make_step.step);
-    }
 
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run Zig unit tests");
