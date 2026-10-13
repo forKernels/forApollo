@@ -90,10 +90,10 @@ The full machine-readable list is in <a href="forApollo-abi.tsv"><code>forApollo
 </p>
 
 <p class="meta">
-Note: the Fortran kernel layer is broader than the public surface — 114 <code>fa_*</code> kernels exist, of which 62 are
-currently exported. The remaining ~52 (e.g. <code>fa_guidance_ddp</code>, <code>fa_astro_bielliptic</code>, several
-<code>fa_coords_*_matrix</code> and <code>fa_time_*</code> conversions) are implemented and backed but not yet wrapped by a
-<code>forapollo_*</code> Layer-2 export.
+Note: the Fortran kernel layer is broader than the public surface. Several <code>fa_*</code> kernels (e.g.
+<code>fa_astro_bielliptic</code> and several <code>fa_coords_*_matrix</code>) are implemented and backed but not yet
+wrapped by a Layer-2 export. The <code>fa_time_*</code> kernels are gone. They were retired on 2026-09-13 in favour of
+forTime: see <a href="#time">Time</a>.
 </p>
 
 <h3>Estimation — Kalman family (KF / EKF / IEKF / UKF / ESKF / SR)</h3>
@@ -186,15 +186,50 @@ currently exported. The remaining ~52 (e.g. <code>fa_guidance_ddp</code>, <code>
   <tr><td><code>forapollo_astro_planetary_mu</code></td><td>Gravitational parameter μ for a body id.</td></tr>
 </table>
 
-<h3>Environment &amp; time</h3>
+<h3>Environment</h3>
 <table>
   <tr><th>Symbol</th><th>Purpose</th></tr>
   <tr><td><code>forapollo_environ_atmosphere_us76</code></td><td>US Standard Atmosphere 1976 (ρ, T, p).</td></tr>
   <tr><td><code>forapollo_environ_gravity_j2</code></td><td>J2-perturbed gravity acceleration vector.</td></tr>
   <tr><td><code>forapollo_environ_geodesic_vincenty</code></td><td>Vincenty geodesic distance and azimuths.</td></tr>
-  <tr><td><code>forapollo_time_gmst</code></td><td>Greenwich Mean Sidereal Time from UT1 JD.</td></tr>
-  <tr><td><code>forapollo_time_cal_to_jd</code></td><td>Calendar date/time → Julian Date.</td></tr>
-  <tr><td><code>forapollo_time_utc_to_tai</code></td><td>UTC JD → TAI JD (leap-second offset).</td></tr>
+</table>
+
+<h3 id="time">Time: backed by forTime, not Fortran (2026-09-13)</h3>
+<p>
+The three time exports keep their names and signatures. They no longer reach a Fortran kernel: each calls forTime's
+prebuilt C ABI through <code>extern "c" fn ftim_*</code> declarations at the call site in <code>src/zig/exports.zig</code>.
+The archive therefore carries <code>U ftim_*</code>, so <strong>link <code>../forTime/prebuilt/&lt;short&gt;/libfortime.a</code>
+beside <code>libforapollo.a</code></strong> (forTime <code>99160b5</code> or newer). The symbol names below are the ones the
+archive exports; other rows on this page still show the retired <code>forapollo_</code> prefix.
+</p>
+<table>
+  <tr><th>Symbol</th><th>Purpose</th><th>forTime calls</th><th>Behaviour vs the retired kernel</th></tr>
+  <tr><td><code>fapo_time_gmst</code></td><td>GMST (rad, [0, 2π)) from UT1 JD, IAU 1982.</td>
+      <td><code>ftim_gmst</code></td>
+      <td>Same model in degree form. Coefficient rounding moves the result by ≤ 2.4e-9 rad (34 µs) over 1900–2100, and by up to
+      1.8e-7 rad at JD 0. A non-finite JD now reports <code>info = 3</code>.</td></tr>
+  <tr><td><code>fapo_time_cal_to_jd</code></td><td>Proleptic Gregorian civil date/time → JD.</td>
+      <td><code>ftim_jd_from_civil_cal</code> (calendar 0)</td>
+      <td>Bit-identical for every valid non-negative year tested. Negative years are now exact: the old Meeus truncation
+      was off by up to one day. Impossible input (month 13, 2023-02-29, hour 24, second ≥ 61 or NaN, negative field)
+      now gives <code>info = 3</code>, <code>jd = NaN</code>, where the old kernel rolled it over silently.</td></tr>
+  <tr><td><code>fapo_time_utc_to_tai</code></td><td>UTC JD → TAI JD.</td>
+      <td><code>ftim_mjd_from_jd</code>, <code>ftim_utc_to_tai</code>, <code>ftim_jd_from_mjd</code></td>
+      <td>Same 28-entry leap-second table. From 1972-01-01 on, the result is identical or within 1 ULP of the JD (≤ 40 µs).
+      <strong>Before 1972 forTime applies TAI−UTC = 10 s</strong>, where the old kernel applied 0 s.</td></tr>
+</table>
+
+<p>The twelve routines <code>forapollo_time.f90</code> never exported have these forTime equivalents:</p>
+<table>
+  <tr><th>Retired routine</th><th>forTime</th><th>Old vs forTime, measured</th></tr>
+  <tr><td><code>fa_time_jd_to_mjd</code> / <code>fa_time_mjd_to_jd</code></td><td><code>ftim_mjd_from_jd</code> / <code>ftim_jd_from_mjd</code></td><td>bit-identical</td></tr>
+  <tr><td><code>fa_time_unix_to_jd</code> / <code>fa_time_jd_to_unix</code></td><td><code>ftim_to_jd</code> / <code>ftim_from_jd</code>, epoch 2</td><td>bit-identical</td></tr>
+  <tr><td><code>fa_time_jd_to_cal</code></td><td><code>ftim_civil_from_jd_cal</code>, calendar 2 (Julian before 1582-10-15)</td><td>bit-identical, including pre-1582 dates</td></tr>
+  <tr><td><code>fa_time_leap_seconds</code></td><td><code>ftim_leap_seconds</code> (takes MJD)</td><td>identical from 1972; before 1972 10 s vs 0 s</td></tr>
+  <tr><td><code>fa_time_tai_to_utc</code></td><td><code>ftim_tai_to_utc</code> (MJD seconds)</td><td>forTime iterates, so the old one-step lookup's 1 s error in the 37 s after each boundary is gone. Before 1972 the result differs by 10 s. <span class="bad">Inside an inserted leap second, forTime returns 2 s late (forTime defect)</span>.</td></tr>
+  <tr><td><code>fa_time_tai_to_tt</code> / <code>fa_time_tt_to_tai</code></td><td><code>ftim_tai_to_tt</code> / <code>ftim_tt_to_tai</code></td><td>identical within JD↔MJD-seconds rounding</td></tr>
+  <tr><td><code>fa_time_utc_to_gps</code> / <code>fa_time_gps_to_utc</code></td><td><code>ftim_utc_to_gps</code> / <code>ftim_gps_to_utc</code>, re-based with <code>ftim_from_jd</code> / <code>ftim_to_jd</code> epoch 3</td><td>as UTC→TAI and TAI→UTC above</td></tr>
+  <tr><td><code>fa_time_tt_to_tdb</code></td><td><code>ftim_tt_to_tdb</code> (MJD days)</td><td><span class="bad">Not a safe replacement yet.</span> forTime evaluates its Fairhead–Bretagnon series with t in Julian centuries, where the series needs millennia, so it is off by up to 3.3 ms. The old one-term formula was within 68 µs of the series over 1900–2100.</td></tr>
 </table>
 
 <h3>Library</h3>
@@ -233,7 +268,8 @@ pub export fn forapollo_kf_predict(
 //   binds forapollo_kf_predict; never sees fa_kf_predict.</code></pre>
 
 <p>
-Backing summary: <strong>all 62</strong> exports are <code>abi_owner = zig-export</code>, <code>backing = fortran:fa_&lt;sym&gt;</code>.
+Backing summary: every export is <code>abi_owner = zig-export</code>. All are <code>backing = fortran:fa_&lt;sym&gt;</code>
+except the three time exports, which are <code>backing = fortime:ftim_*</code> (see <a href="#time">Time</a>).
 There are <strong>zero</strong> Anti-Pattern B symbols (no <code>bind(C, name="forapollo_*")</code> anywhere in
 <code>src/fortran/</code>) and <strong>zero</strong> Anti-Pattern A symbols (no pure-Zig math behind a
 <code>forapollo_*</code> name).

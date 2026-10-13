@@ -23,7 +23,43 @@
 FC       = gfortran
 MARCH    ?= native
 
-FFLAGS   := -O3 -ftree-vectorize -fPIC -cpp -std=f2008 -fall-intrinsics \
+# =============================================================================
+# -fwrapv: DEFINED WRAPPING FOR SIGNED OVERFLOW.
+#
+# src/fortran/forapollo_estimate.f90 runs a glibc-style LCG on 4-byte integers
+# (integer(c_int) :: seed, and a local `integer :: local_seed`):
+#     seed = mod(seed * 1103515245 + 12345, 2147483647)
+# The multiply overflows signed 32-bit on essentially every call. The mod()
+# bounds the RESULT, not the intermediate product, so it does not prevent it.
+# Signed overflow is UNDEFINED in Fortran, so the optimizer may assume it never
+# happens. Site enumerated by the multiplier constant present in the source, not
+# from a site list (the 2026-08-19 list named a forMath file that does not exist
+# and missed four forQuant files outright); this is forApollo's only one.
+#
+# NOT demonstrably miscompiled today: for this class of generator the isolated
+# stream hash is identical across -O0/-O1/-O2/-O3 native/-Ofast and with
+# -fwrapv, while -ftrapv aborts at the multiply. The overflow executes; gfortran
+# is not currently exploiting it here. Do not report this as a repair.
+#
+# SO WHY ADD IT. Because that isolation test has a DEMONSTRATED BLIND SPOT.
+# for3D's tests/test_density_to_mesh.f90 carries the same class of constant and
+# IS live miscompiled on gfortran 15.2.0 -- the real fixture HANGS at -O2 and
+# -O3 without -fwrapv -- while a standalone replication of that exact LCG,
+# measured the same way, hashes IDENTICALLY at every level. The construct that
+# provably hangs in situ looks clean in isolation, because the miscompile
+# depends on surrounding context rather than on the LCG alone. A negative from
+# the isolated test therefore licenses nothing.
+#
+# An estimator that silently reuses a frozen random draw degrades quietly --
+# particle filters and UKF sigma-point jitter would still return numbers. The
+# failure mode is silence: for3D presented as a HANG, not as bad numbers.
+#
+# REBUILDING: make keys off mtime, never off flags, so this triggers no
+# recompile by itself. `make clean` first or it is inert.
+# =============================================================================
+FFLAGS_OVERFLOW := -fwrapv
+
+FFLAGS   := $(FFLAGS_OVERFLOW) -O3 -ftree-vectorize -fPIC -cpp -std=f2008 -fall-intrinsics \
             -Wall -Wextra -Wimplicit-interface -fopenmp -march=$(MARCH)
 
 # --- Target detection — short canonical names --------------------------------
@@ -39,6 +75,21 @@ FFLAGS   := -O3 -ftree-vectorize -fPIC -cpp -std=f2008 -fall-intrinsics \
 # the same per-target obj dir Stage 2 reads — all 4 targets build, no clobber.
 #
 UNAME_S  := $(shell uname -s)
+
+# macOS minimum-version pin (2026-09-12). Homebrew's gfortran is built as
+# aarch64-apple-darwin25 and stamps LC_BUILD_VERSION minos 28.0 into every
+# object -- AHEAD of both the installed SDK (27.0) and what Zig emits for a
+# native build (27.0). Apple's ld then warns "object file was built for newer
+# 'macOS' version (28.0) than being linked (27.0)" once per Fortran object, and
+# the delivered archive claims a floor above the shipping OS.
+#
+# Appended to FC, not FFLAGS, on purpose: several fleet Makefiles assign FFLAGS
+# inside conditional branches where a single `FFLAGS +=` can be clobbered by a
+# later `FFLAGS =`. Every gfortran call goes through $(FC), so this cannot be
+# missed. A cross-compile branch that reassigns FC drops it, which is correct.
+ifeq ($(UNAME_S),Darwin)
+    FC += -mmacosx-version-min=27.0
+endif
 UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
@@ -79,7 +130,11 @@ LIB          := $(PLAT_LIB_DIR)/libforapollo_fortran.a
 #   Layer 0 — Models (no intra-Apollo deps): dynamics, observe
 #   Layer 1 — Engine core: estimate, propagate
 #   Layer 2 — Engine aux: guidance, coords
-#   Layer 3 — Domain utilities: astro, environ, time
+#   Layer 3 — Domain utilities: astro, environ
+#
+# Time scales, calendars and leap seconds are forTime's (ftim_*, linked as
+# ../forTime/prebuilt/<target>/libfortime.a); forapollo_time.f90 was retired
+# 2026-09-13.
 #
 SRCS := \
     $(SRC_DIR)/forapollo_dynamics.f90   \
@@ -89,8 +144,7 @@ SRCS := \
     $(SRC_DIR)/forapollo_guidance.f90   \
     $(SRC_DIR)/forapollo_coords.f90     \
     $(SRC_DIR)/forapollo_astro.f90      \
-    $(SRC_DIR)/forapollo_environ.f90    \
-    $(SRC_DIR)/forapollo_time.f90
+    $(SRC_DIR)/forapollo_environ.f90
 
 # Derive object file names: src/fortran/forapollo_X.f90 → build/obj/forapollo_X.o
 OBJS := $(patsubst $(SRC_DIR)/%.f90,$(OBJ_DIR)/%.o,$(SRCS))

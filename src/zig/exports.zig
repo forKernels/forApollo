@@ -9,6 +9,7 @@
 //
 // Flow: caller → fapo_* (validate) → dispatch → fortran fa_*
 
+const std = @import("std");
 const safety = @import("safety.zig");
 const fortran = @import("fortran.zig");
 // Public re-export so consumers can call `@import("forapollo").dispatch.<wrapper>(...)`
@@ -814,6 +815,48 @@ pub export fn fapo_guidance_lqr(n: i32, m: i32, A: [*]const f64, B: [*]const f64
     dispatch.guidanceLqr(n, m, A, B, Q_cost, R_cost, x, u_cmd, info);
 }
 
+// The four trajectory-optimisation entries below were left behind by the
+// fa_ -> fapo_ rename. Both prefixes still ship from this archive (113 fa_,
+// 62 fapo_), and the fapo_ half covered the closed-form guidance laws while
+// these four - the iterative ones - kept only their fa_ names. forNav's
+// Fortran calls fapo_guidance_mpc_shooting directly and has been linking
+// against a symbol nothing exported.
+//
+// The argument order is the Fortran's, unchanged: a rename that also reshaped
+// the call would be two changes wearing one name.
+
+pub export fn fapo_guidance_ilqr(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceIlqr(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+
+pub export fn fapo_guidance_ddp(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, alpha: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceDdp(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, alpha, info);
+}
+
+pub export fn fapo_guidance_mpc_shooting(n: i32, m: i32, N_horizon: i32, x0: [*]const f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceMpcShooting(n, m, N_horizon, x0, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+
+pub export fn fapo_guidance_mpc_collocation(n: i32, m: i32, N_horizon: i32, x_traj: [*]f64, u_traj: [*]f64, Q_cost: [*]const f64, R_cost: [*]const f64, Qf: [*]const f64, x_ref: [*]const f64, dt: f64, max_iter: i32, tol: f64, info: *i32) callconv(.c) void {
+    if (n <= 0 or m <= 0 or N_horizon <= 0) {
+        info.* = 3;
+        return;
+    }
+    dispatch.guidanceMpcCollocation(n, m, N_horizon, x_traj, u_traj, Q_cost, R_cost, Qf, x_ref, dt, max_iter, tol, info);
+}
+
 pub export fn fapo_guidance_pure_pursuit(x_pos: [*]const f64, x_lookahead: [*]const f64, L_wheelbase: f64, steer_cmd: *f64, info: *i32) callconv(.c) void {
     if (L_wheelbase <= 0.0) {
         info.* = 3;
@@ -963,17 +1006,72 @@ pub export fn fapo_environ_geodesic_vincenty(lat1: f64, lon1: f64, lat2: f64, lo
 }
 
 // ============================================================================
-// Time
+// Time -- forTime's C ABI, called directly
 // ============================================================================
+//
+// forTime owns every time scale, calendar and leap-second table in the fleet.
+// These three exports keep forApollo's public ABI unchanged (Julian Dates in and
+// out; info 0 = ok, 3 = invalid input) and call forTime's PREBUILT C ABI. The
+// ftim_* externs are declared at each call site below; signatures are copied
+// from forTime include/fortime.h. No forTime source is compiled into this
+// archive: libforapollo.a carries `U ftim_*`, and a consumer links
+// ../forTime/prebuilt/<short>/libfortime.a beside it.
+//
+// forApollo's own Fortran time module (forapollo_time.f90: 15 routines, three
+// copies of the leap-second table) was retired on 2026-09-13. Its twelve
+// routines that were never exported map onto forTime exports listed in
+// docs/architecture/forApollo-abi.html.
 
+/// forTime time-scale seconds count from the MJD epoch; JDs cross over through
+/// ftim_mjd_from_jd / ftim_jd_from_mjd, so only the day length appears here.
+const seconds_per_day: f64 = 86400.0;
+
+extern "c" fn ftim_gmst(jd_ut1: f64) f64;
+
+/// Greenwich Mean Sidereal Time (radians, [0, 2pi)), IAU 1982, from a UT1 JD.
+/// A non-finite JD reports info = 3; gmst_rad receives forTime's NaN.
 pub export fn fapo_time_gmst(ut1_jd: f64, gmst_rad: *f64, info: *i32) callconv(.c) void {
-    dispatch.timeGmst(ut1_jd, gmst_rad, info);
+    const g = ftim_gmst(ut1_jd);
+    gmst_rad.* = g;
+    info.* = if (std.math.isNan(g)) 3 else 0;
 }
 
+extern "c" fn ftim_jd_from_civil_cal(year: i64, month: u32, day: u32, hour: u32, minute: u32, second: f64, calendar_id: i32, out_jd: *f64) i32;
+
+/// Julian Date from a civil date and time on the proleptic Gregorian calendar
+/// (forTime calendar_id 0), the calendar the retired Meeus kernel applied to
+/// every year. forTime validates the fields: an impossible date or time
+/// (month 13, 2023-02-29, hour 24, second >= 61 or NaN, a negative field)
+/// reports info = 3 with jd = NaN, where the old kernel rolled it over silently.
 pub export fn fapo_time_cal_to_jd(year: i32, month: i32, day: i32, hour: i32, minute: i32, second: f64, jd: *f64, info: *i32) callconv(.c) void {
-    dispatch.timeCalToJd(year, month, day, hour, minute, second, jd, info);
+    const gregorian: i32 = 0;
+    // forTime takes the fields unsigned; reject a negative one before the cast.
+    if (month < 0 or day < 0 or hour < 0 or minute < 0 or
+        ftim_jd_from_civil_cal(year, @intCast(month), @intCast(day), @intCast(hour), @intCast(minute), second, gregorian, jd) != 0)
+    {
+        jd.* = std.math.nan(f64);
+        info.* = 3;
+        return;
+    }
+    info.* = 0;
 }
 
+extern "c" fn ftim_mjd_from_jd(jd: f64) f64;
+extern "c" fn ftim_jd_from_mjd(mjd: f64) f64;
+extern "c" fn ftim_utc_to_tai(utc_sec: f64, out: *f64) i32;
+
+/// TAI Julian Date from a UTC Julian Date, through forTime's leap-second table.
+/// Before 1972-01-01 forTime applies TAI - UTC = 10 s; the retired kernel used 0.
 pub export fn fapo_time_utc_to_tai(utc_jd: f64, tai_jd: *f64, info: *i32) callconv(.c) void {
-    dispatch.timeUtcToTai(utc_jd, tai_jd, info);
+    // forTime writes TAI seconds into the caller's slot, converted in place.
+    // No local's address escapes to the extern: in ReleaseSafe that would add a
+    // stack-protector canary, i.e. `U __stack_chk_fail/__stack_chk_guard` that
+    // every consumer (MSVC included) would then have to resolve.
+    if (ftim_utc_to_tai(ftim_mjd_from_jd(utc_jd) * seconds_per_day, tai_jd) != 0) {
+        tai_jd.* = std.math.nan(f64);
+        info.* = 3;
+        return;
+    }
+    tai_jd.* = ftim_jd_from_mjd(tai_jd.* / seconds_per_day);
+    info.* = 0;
 }

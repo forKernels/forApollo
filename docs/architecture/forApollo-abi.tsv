@@ -58,6 +58,6 @@ forapollo_astro_planetary_mu	orbital	(i32 body_id, f64* mu, i32* info) -> void	f
 forapollo_environ_atmosphere_us76	ephemeris	(f64 h, f64* rho, f64* T, f64* p, i32* info) -> void	fortran:fa_environ_atmosphere_us76	zig-export	ok
 forapollo_environ_gravity_j2	ephemeris	(f64* r_vec, f64 mu, f64 J2, f64 R_eq, f64* g_vec, i32* info) -> void	fortran:fa_environ_gravity_j2	zig-export	ok
 forapollo_environ_geodesic_vincenty	ephemeris	(f64 lat1, f64 lon1, f64 lat2, f64 lon2, f64 a, f64 f, f64* dist, f64* az1, f64* az2, i32* info) -> void	fortran:fa_environ_geodesic_vincenty	zig-export	ok
-forapollo_time_gmst	ephemeris	(f64 ut1_jd, f64* gmst_rad, i32* info) -> void	fortran:fa_time_gmst	zig-export	ok
-forapollo_time_cal_to_jd	ephemeris	(i32 year, i32 month, i32 day, i32 hour, i32 minute, f64 second, f64* jd, i32* info) -> void	fortran:fa_time_cal_to_jd	zig-export	ok
-forapollo_time_utc_to_tai	ephemeris	(f64 utc_jd, f64* tai_jd, i32* info) -> void	fortran:fa_time_utc_to_tai	zig-export	ok
+forapollo_time_gmst	ephemeris	(f64 ut1_jd, f64* gmst_rad, i32* info) -> void	fortime:ftim_gmst	zig-export	ok
+forapollo_time_cal_to_jd	ephemeris	(i32 year, i32 month, i32 day, i32 hour, i32 minute, f64 second, f64* jd, i32* info) -> void	fortime:ftim_jd_from_civil_cal	zig-export	ok
+forapollo_time_utc_to_tai	ephemeris	(f64 utc_jd, f64* tai_jd, i32* info) -> void	fortime:ftim_utc_to_tai+ftim_mjd_from_jd+ftim_jd_from_mjd	zig-export	ok
