@@ -244,6 +244,51 @@ fn main16(init: std.process.Init.Minimal) !void {
     return wrapMain(a, list.items, objcopy_override);
 }
 
+/// objcopy --wildcard semantics for the entries a keep list uses: the WHOLE
+/// symbol must match, '*' matches any run of bytes (including none), '?' any
+/// one byte. ('[...]' classes and '!' negation appear in no keep list.)
+///
+/// The gate used to match a keep entry as a SUBSTRING of the symbol, so a raw
+/// Fortran name that merely CONTAINS a kept Zig name passed it while objcopy,
+/// which anchors the glob, would not have kept it. The gate and the keep pass
+/// now agree on what a keep entry means. Taken from for3D's tools/wrap.zig.
+fn globMatch(pattern: []const u8, name: []const u8) bool {
+    var p: usize = 0;
+    var n: usize = 0;
+    var star: ?usize = null; // pattern index just past the last '*'
+    var mark: usize = 0; // how far into `name` that '*' has absorbed
+    while (n < name.len) {
+        if (p < pattern.len and (pattern[p] == '?' or pattern[p] == name[n])) {
+            p += 1;
+            n += 1;
+        } else if (p < pattern.len and pattern[p] == '*') {
+            star = p + 1;
+            mark = n;
+            p += 1;
+        } else if (star) |s| {
+            p = s;
+            mark += 1;
+            n = mark;
+        } else return false;
+    }
+    while (p < pattern.len and pattern[p] == '*') p += 1;
+    return p == pattern.len;
+}
+
+test "globMatch: a keep entry is anchored at both ends, not a substring" {
+    // forApollo's keep glob: the fapo_ Zig boundary, Mach-O and ELF spellings
+    try std.testing.expect(globMatch("*fapo_*", "_fapo_astro_hohmann"));
+    try std.testing.expect(globMatch("*fapo_*", "fapo_astro_hohmann"));
+    // the fa_ Fortran binds behind it do not match
+    try std.testing.expect(!globMatch("*fapo_*", "_fa_astro_hohmann"));
+    // a per-name entry does not keep a longer raw name that contains it
+    try std.testing.expect(!globMatch("*fapo_x", "_fapo_x_c"));
+    // the substring test this replaced passed exactly that leak
+    try std.testing.expect(std.mem.indexOf(u8, "_fapo_x_c", "fapo_x") != null);
+    try std.testing.expect(globMatch("a?c*", "abcdef"));
+    try std.testing.expect(!globMatch("", "x"));
+}
+
 
 
 fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[]const u8) !void {
@@ -257,11 +302,10 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
     const inputs = args[4..];
     const objcopy = objcopyBin(objcopy_override);
 
-    // Parse the keep list into globs (for objcopy) and their bare tokens (for
-    // the gate check — '*' stripped). Either inline comma-separated globs, or
-    // '@<path>' — a manifest file with one glob per line (# comments OK).
+    // Parse the keep list into globs (for objcopy and for the gate). Either
+    // inline comma-separated globs, or '@<path>' — a manifest file with one
+    // glob per line (# comments OK).
     var globs: std.ArrayListUnmanaged([]const u8) = .empty;
-    var tokens: std.ArrayListUnmanaged([]const u8) = .empty;
     {
         var keep_text: []const u8 = args[3];
         var delim: u8 = ',';
@@ -274,7 +318,6 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
             const g = std.mem.trim(u8, raw, " \t\r");
             if (g.len == 0 or g[0] == '#') continue;
             try globs.append(a, g);
-            try tokens.append(a, std.mem.trim(u8, g, "*"));
         }
     }
     if (globs.items.len == 0) {
@@ -439,8 +482,8 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
             // opcode bytes. A stub carries no callable surface, so this opens
             // no bind-Fortran path past the seal.
             var matched = std.mem.indexOf(u8, name, ".refptr.") != null;
-            if (!is_mod) for (tokens.items) |t| {
-                if (std.mem.indexOf(u8, name, t) != null) {
+            if (!is_mod) for (globs.items) |g| {
+                if (globMatch(g, name)) {
                     matched = true;
                     break;
                 }
