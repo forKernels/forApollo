@@ -129,7 +129,7 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseFast — Debug materializes 'undefined' as real bytes and shipped a 68MB forCV archive)") orelse .ReleaseFast;
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseSafe. Zortran: hot math is gfortran-compiled and unaffected by this, so Zig bounds/overflow checks stay ON and a bad host pointer panics at the C ABI instead of becoming UB. Never Debug for delivery.)") orelse .ReleaseSafe;
     const target_name = getTargetName(target.result);
 
     // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
