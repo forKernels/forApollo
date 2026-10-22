@@ -34,6 +34,22 @@ fn fileExists(b: *std.Build, path: []const u8) !void {
     }
 }
 
+/// The absolute path the host's gfortran gives for one of its runtime files,
+/// or null when it has none. Asking gfortran, not hardcoding a gcc version
+/// directory: MSYS2 keeps the old ones around after an upgrade.
+fn gfortranRuntimeFile(b: *std.Build, name: []const u8) ?[]const u8 {
+    var code: u8 = undefined;
+    const out = b.runAllowFail(
+        &.{ "gfortran", b.fmt("-print-file-name={s}", .{name}) },
+        &code,
+        if (comptime @hasDecl(std.process, "SpawnOptions")) .ignore else .Ignore,
+    ) catch return null;
+    const path = std.mem.trim(u8, out, " \t\r\n");
+    if (!std.fs.path.isAbsolute(path)) return null;
+    fileExists(b, path) catch return null;
+    return path;
+}
+
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
         .macos => "macos",
@@ -45,56 +61,6 @@ fn getTargetName(t: std.Target) []const u8 {
         .windows => "winX86",
         else => "unknown",
     };
-}
-
-// ---------------------------------------------------------------------------
-// Dependency library names (linked by name, resolved via search paths)
-// ---------------------------------------------------------------------------
-
-/// forMath component libraries needed by forApollo
-const formath_libs = [_][]const u8{
-    "formath_linalg",
-    "formath_ode",
-    "formath_quaternion",
-    "formath_liegroups",
-    "formath_optimize",
-    "formath_special",
-    "formath_random",
-    "formath_numdiff",
-    "formath_fft",
-};
-
-/// Other upstream dependency libraries
-const upstream_libs = [_][]const u8{
-    "forfft",
-    "foropt",
-    "forternary",
-    "forGraph",
-};
-
-// ---------------------------------------------------------------------------
-// Helper: add sibling library search paths
-// ---------------------------------------------------------------------------
-
-fn addSiblingPaths(step: *std.Build.Module, b: *std.Build, target_name: []const u8) void {
-    const siblings = [_]struct { name: []const u8, path: []const u8 }{
-        .{ .name = "formath", .path = "../forMath" },
-        .{ .name = "forfft", .path = "../forFFT" },
-        .{ .name = "foropt", .path = "../forOpt" },
-        .{ .name = "forternary", .path = "../forTernary" },
-        .{ .name = "forgraph", .path = "../forGraph" },
-        .{ .name = "forcuda", .path = "../forCUDA" },
-    };
-
-    for (siblings) |dep| {
-        const sibling = dep.path;
-        // Standard paths
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/{s}/lib", .{ sibling, target_name }) });
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/{s}/lib", .{ sibling, target_name }) });
-        // Fallback for non-standardized repos
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/zig-out/lib", .{sibling}) });
-        step.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/prebuilt/lib", .{sibling}) });
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,18 +77,10 @@ fn linkDeps(
     // Fortran kernel archive (stage-1 output)
     step.addObjectFile(b.path(fortran_obj));
 
-    // Sibling search paths
-    addSiblingPaths(step, b, target_name);
-
-    // Link forMath component libraries
-    for (formath_libs) |lib_name| {
-        step.linkSystemLibrary(lib_name, .{});
-    }
-
-    // Link other upstream libraries
-    for (upstream_libs) |lib_name| {
-        step.linkSystemLibrary(lib_name, .{});
-    }
+    // No other sibling. The archive's only cross-repo references are forTime's
+    // ftim_* (nm -u, 2026-10-21). The forMath/forFFT/forOpt/forTernary/forGraph
+    // libraries this used to link by name were never referenced, and it looked
+    // for them under prebuilt/<branch>/lib, where no sibling delivers.
 
     // forTime: the PREBUILT archive, by path, side by side -- never its source,
     // never a by-name search. fapo_time_* reach ftim_* through call-site externs
@@ -145,9 +103,23 @@ fn linkDeps(
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/aarch64-linux-gnu/13" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/14" });
         step.addLibraryPath(.{ .cwd_relative = "/usr/lib/gcc/x86_64-linux-gnu/13" });
+    } else if (step.resolved_target.?.result.os.tag == .windows) {
+        // MSYS2 UCRT64's gfortran keeps libgfortran and libgomp in its lib/.
+        step.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
     }
     step.linkSystemLibrary("gfortran", .{});
     step.linkSystemLibrary("gomp", .{});
+    // MSYS2's libgfortran is static, so a Windows link also needs libquadmath,
+    // libgcc_eh (its unwinder) and libgcc itself (__cpu_model), which goes in
+    // by path because Zig drops -lgcc. Only a Windows host's gfortran can say
+    // where that is.
+    if (step.resolved_target.?.result.os.tag == .windows) {
+        step.linkSystemLibrary("quadmath", .{});
+        step.linkSystemLibrary("gcc_eh", .{});
+        if (@import("builtin").os.tag == .windows) {
+            if (gfortranRuntimeFile(b, "libgcc.a")) |p| step.addObjectFile(.{ .cwd_relative = p });
+        }
+    }
     step.link_libc = true;
 }
 
@@ -157,7 +129,7 @@ fn linkDeps(
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseFast — Debug materializes 'undefined' as real bytes and shipped a 68MB forCV archive)") orelse .ReleaseFast;
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (delivery default: ReleaseSafe. Zortran: hot math is gfortran-compiled and unaffected by this, so Zig bounds/overflow checks stay ON and a bad host pointer panics at the C ABI instead of becoming UB. Never Debug for delivery.)") orelse .ReleaseSafe;
     const target_name = getTargetName(target.result);
 
     // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
@@ -381,6 +353,20 @@ pub fn build(b: *std.Build) void {
     });
     linkDeps(b, unit_tests.root_module, fortran_archive, target_name, fortime_archive);
     if (fortime_missing) |fail| unit_tests.step.dependOn(fail);
+    // libgfortran calls strndup, which Zig's bundled mingw-w64 lacks. The shim
+    // is its own object, linked into the test exe only: exports.zig is the
+    // archive's root, and an export there would ship in libforapollo.a.
+    if (target.result.os.tag == .windows) {
+        unit_tests.root_module.addObject(b.addObject(.{
+            .name = "strndup_shim",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/zig/strndup_shim.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        }));
+    }
 
 
     const run_tests = b.addRunArtifact(unit_tests);
