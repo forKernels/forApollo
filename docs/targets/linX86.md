@@ -20,3 +20,9 @@ This branch carries patches specific to the x86_64-linux-gnu target
 - /usr/lib/gcc/x86_64-linux-gnu/14 in link search paths
 - x86_64-linux-gnu in per-module TargetId enums where missing
 - forCUDA sibling path resolution extended to linux-x86_64
+
+## Delivery build (2026-11-05)
+The delivered `prebuilt/linX86/` archive is built in Docker
+(`forkernels-linx86:zig016`: Ubuntu 24.04, Zig 0.16.0, gfortran 14.2.0) with
+`zig build -Dtarget=x86_64-linux-gnu.2.34 -Dcpu=x86_64_v3`: glibc floor 2.34,
+no AVX-512, no libmvec (`_ZGV*`), PIC. Tests run at native.
