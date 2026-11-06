@@ -200,6 +200,7 @@ forApollo links prebuilt archives from the forKernels ecosystem. **No upstream `
 | **forOpt** | Heavy optimization for MPC · Trajectory targeting |
 | **forTernary** | Three-valued logic for sensor gating · Mode detection · Estimator health |
 | **forGraph** | Graph search for path planning · Multi-target assignment · Mission phase DAG |
+| **forTime** | UTC→TAI with its leap-second table · GMST · Civil date→Julian Date (behind `fapo_time_*`) |
 
 ```
 deps/
@@ -209,6 +210,17 @@ deps/
 ├── forternary/ { lib/*.a + zig/ }
 └── forgraph/   { lib/*.a + zig/ }
 ```
+
+**Linking forApollo: put forTime's archive beside it.** `libforapollo.a` leaves forTime's `ftim_*`
+symbols undefined, so every link that includes forApollo also links forTime's prebuilt archive, one copy
+shared with anything else in the link that uses forTime:
+
+```
+../forApollo/prebuilt/<short>/libforapollo.a
+../forTime/prebuilt/<short>/libfortime.a      # forTime 99160b5 or newer
+```
+
+forTime is wired through its prebuilt binary and call-site `extern` declarations, not through `deps/`.
 
 ---
 

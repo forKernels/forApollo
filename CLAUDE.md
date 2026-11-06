@@ -32,7 +32,7 @@ python/               ← Python bindings (ctypes → Zig safety layer)
 |-------|-------|---------|
 | **Engine** | `estimate`, `propagate`, `guidance`, `coords` | Domain-agnostic core. Any state vector. |
 | **Models** | `dynamics`, `observe` | Pluggable catalog of built-in dynamics & measurement models with analytic Jacobians. |
-| **Domain** | `astro`, `environ`, `time` | Space-specific utilities. Non-space users never touch these. |
+| **Domain** | `astro`, `environ` (time scales: forTime) | Space-specific utilities. Non-space users never touch these. |
 
 ### Call Chain
 
@@ -58,7 +58,7 @@ All matrices are **flat 1D arrays in row-major order** at the C ABI boundary:
 - `F(n*n)` — dynamics Jacobian, flat row-major
 - `H(m*n)` — measurement Jacobian, flat row-major
 
-## Fortran Source Files (9 total)
+## Fortran Source Files (8 total)
 
 All in `src/fortran/`. All `bind(C, name="fa_*")`.
 
@@ -133,9 +133,12 @@ All in `src/fortran/`. All `bind(C, name="fa_*")`.
 - Solar radiation pressure
 - Geodesics (Vincenty, Karney)
 
-**forapollo_time.f90** — precision time systems (future: migrates to forTime):
-- UTC, TAI, TT, TDB, GPS, MJD, JD, Unix epoch
-- Leap second table, relativistic corrections
+**Time scales and calendars are forTime's, not a Fortran file here.** `forapollo_time.f90`
+(15 routines, three copies of the leap-second table) was retired on 2026-09-13. The three public
+exports `fapo_time_gmst`, `fapo_time_cal_to_jd` and `fapo_time_utc_to_tai` keep their ABI and call
+forTime's C ABI (`ftim_*`) through externs declared at the call site in `src/zig/exports.zig`.
+See "Linking forApollo" under Dependencies. Never re-add time math here: if forTime lacks something,
+report the gap to forTime.
 
 ## Hybrid Dispatch (function pointer + built-in catalog)
 
@@ -185,7 +188,7 @@ Links prebuilt `.a` archives + Zig modules. No upstream `.f90` in this repo.
 | **forOpt** | Heavy optimization for MPC, trajectory targeting | `fo_` |
 | **forTernary** | Three-valued logic for sensor gating, mode detection, estimator health | `fk_ternary_` |
 | **forGraph** | Graph search for path planning, multi-target assignment, mission phase DAG | `fgr_` |
-| **forTime** | Time system conversions (future, when forTime ships) | `ft_` |
+| **forTime** | UTC→TAI with its leap-second table, GMST, civil date→JD (behind `fapo_time_*`). Linked as its prebuilt archive; call-site externs | `ftim_` |
 
 ### DEPENDENCY RULES — READ BEFORE WRITING CODE
 
@@ -194,6 +197,26 @@ Links prebuilt `.a` archives + Zig modules. No upstream `.f90` in this repo.
 3. If you need a symbol from forMath/forFFT/forOpt/etc: check prebuilt archive, import Zig module, do NOT copy source or write new extern fn.
 4. The only .f90 files in this repo are THIS library's kernels.
 5. Default build links prebuilt deps. Source build opt-in: `-Ddev=true`.
+6. forTime (2026-09-13) is wired to its PREBUILT binary: `../forTime/prebuilt/<short>/libfortime.a`
+   linked by path, `extern "c" fn ftim_*` declared at the call site with signatures copied from
+   forTime `include/fortime.h`. No forTime Zig module, no forTime source, no wrapper or bridge.
+
+### Linking forApollo: put libfortime.a beside libforapollo.a
+
+`libforapollo.a` leaves forTime's symbols undefined: `U ftim_gmst`, `ftim_jd_from_civil_cal`,
+`ftim_mjd_from_jd`, `ftim_jd_from_mjd`, `ftim_utc_to_tai`. Whatever links forApollo therefore links
+forTime's prebuilt archive beside it. It is one copy, shared with every other library in the same link
+that needs forTime:
+
+```
+../forApollo/prebuilt/<short>/libforapollo.a
+../forTime/prebuilt/<short>/libfortime.a
+```
+
+`zig build shared` and `zig build test` link it from that path (`-Dfortime-archive=<path>` overrides it).
+They fail with an explicit message when it is missing. The static delivery (`zig build`) never links it.
+`ftim_jd_from_civil_cal` first shipped in forTime `99160b5` (2026-09-13), so a forTime prebuilt older than
+that does not resolve it.
 
 ## Build
 
