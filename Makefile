@@ -87,8 +87,15 @@ UNAME_S  := $(shell uname -s)
 # inside conditional branches where a single `FFLAGS +=` can be clobbered by a
 # later `FFLAGS =`. Every gfortran call goes through $(FC), so this cannot be
 # missed. A cross-compile branch that reassigns FC drops it, which is correct.
+#
+# The pin is the fleet's macOS floor, 26.0 (2026-10-21): the Zig half of every
+# macos delivery is built with -Dtarget=aarch64-macos.26.0, and an object pinned
+# higher than the layer it is sealed with fails the seal ("object file was built
+# for newer 'macOS' version (27.0) than being linked (26.0)"). `?=` so a build
+# can still ask for another floor: make MACOS_MIN=27.0.
+MACOS_MIN ?= 26.0
 ifeq ($(UNAME_S),Darwin)
-    FC += -mmacosx-version-min=27.0
+    FC += -mmacosx-version-min=$(MACOS_MIN)
 endif
 UNAME_M  := $(shell uname -m)
 

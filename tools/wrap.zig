@@ -391,6 +391,20 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
         localized += 1;
     }
 
+    // ---- x64 COFF: HIDE .pdata FROM ld -r (forDSP add54ee, forGeo 5659d7f,
+    // forOpt 26f12d9). GNU ld (pe-x86-64) sorts the output .pdata rows by their
+    // raw begin offset even under -r, but leaves the relocations in place. Each
+    // input's rows relocate against that input's own .text symbol, so the sort
+    // pairs rows with the wrong functions: unwinding reads garbage, and MSVC
+    // link.exe refuses such an object (LNK1223). Under another name the rows
+    // stay in input order, i.e. .text order; the keep pass renames it back.
+    // Every object here is already a workdir copy, so renaming in place is safe.
+    const coff_x64 = blk: {
+        const head = try readFileAlloc(a, objs.items[0], 1 << 30);
+        break :blk head.len >= 2 and head[0] == 0x64 and head[1] == 0x86;
+    };
+    if (coff_x64) for (objs.items) |o| try run(a, &.{ objcopy, "--rename-section", ".pdata=.pdatx", o });
+
     // ---- ld -r : all objects -> combined.o ----
     const combined = try std.fs.path.join(a, &.{ workdir, "forapollo_combined.o" });
     {
@@ -398,6 +412,14 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
         try argv.appendSlice(a, &.{ "ld", "-r", "-o", combined });
         for (objs.items) |o| try argv.append(a, o);
         try run(a, argv.items);
+    }
+    if (coff_x64) {
+        // Self-check: a .pdata here came from an input the rename missed, and ld sorted it.
+        const hdrs = try capture(a, &.{ "objdump", "-h", combined });
+        if (std.mem.indexOf(u8, hdrs, " .pdata ") != null) {
+            std.debug.print("wrap: GATE FAILED -- ld -r output has a sorted .pdata (an input escaped the rename)\n", .{});
+            return error.GateFailed;
+        }
     }
 
     // ---- keep ONLY the listed globs global; all Fortran goes internal ----
@@ -419,6 +441,7 @@ fn wrapMain(a: std.mem.Allocator, args: []const []const u8, objcopy_override: ?[
             try argv.append(a, "--keep-global-symbol");
             try argv.append(a, g);
         }
+        if (coff_x64) try argv.appendSlice(a, &.{ "--rename-section", ".pdatx=.pdata" });
         try argv.append(a, combined);
         try run(a, argv.items);
     }
