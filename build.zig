@@ -135,9 +135,8 @@ pub fn build(b: *std.Build) void {
 
     // Canonical delivery (CANON 2026-06-19): prebuilt/<branch>/lib<name>.a
     // <branch> = macos | thor | linX86 | winX86. Short names, NO lib/ segment.
-    b.install_path = b.pathFromRoot("prebuilt");
-    b.install_prefix = b.install_path;
-    b.lib_dir = b.pathFromRoot(b.fmt("prebuilt/{s}", .{target_name}));
+    // wrap_run writes it there itself; the install prefix stays Zig's default
+    // (0.17 cannot override it), so `zig build shared` lands in zig-out/.
 
     // -----------------------------------------------------------------------
     // Build options
@@ -194,7 +193,7 @@ pub fn build(b: *std.Build) void {
         []const u8,
         "fortime-archive",
         "forTime's prebuilt static archive (default ../forTime/prebuilt/<target>/libfortime.a)",
-    ) orelse b.pathFromRoot(b.fmt("../forTime/prebuilt/{s}/libfortime.a", .{target_name}));
+    ) orelse rootPath(b, b.fmt("../forTime/prebuilt/{s}/libfortime.a", .{target_name}));
     // A missing archive fails LOUDLY, but only on the steps that link it: the
     // static delivery (`zig build`) never links forTime and is not blocked.
     const fortime_missing: ?*std.Build.Step = if (fileExists(b, fortime_archive)) null else |_| &b.addFail(b.fmt(
@@ -270,8 +269,8 @@ pub fn build(b: *std.Build) void {
 
     const wrap_run = b.addRunArtifact(wrap_exe);
     wrap_run.has_side_effects = true; // writes prebuilt/<target>/libforapollo.a
-    wrap_run.addArg(b.pathFromRoot(b.fmt("prebuilt/{s}/libforapollo.a", .{target_name})));
-    wrap_run.addArg(b.pathFromRoot(b.fmt(".zig-cache/wrap/{s}", .{target_name})));
+    wrap_run.addArg(rootPath(b, b.fmt("prebuilt/{s}/libforapollo.a", .{target_name})));
+    wrap_run.addArg(rootPath(b, b.fmt(".zig-cache/wrap/{s}", .{target_name})));
     wrap_run.addArg("*fapo_*");
     wrap_run.addFileArg(exports_obj.getEmittedBin());
 
@@ -289,7 +288,7 @@ pub fn build(b: *std.Build) void {
     // Fortran members yields an archive that links but is missing every kernel, and
     // that only surfaces in the consumer.
     for (fortran_kernel_basenames) |name| {
-        const obj = b.pathFromRoot(b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }));
+        const obj = rootPath(b, b.fmt("{s}/{s}.o", .{ fortran_obj_dir, name }));
         fileExists(b, obj) catch std.debug.panic(
             "[forApollo] Stage 1 object missing: {s}\n" ++
                 "Run Stage 1 first:\n" ++
@@ -401,4 +400,10 @@ fn declareDirRead(b: *std.Build, dir: []const u8) void {
         } else |_| {}
         p = std.fs.path.dirname(p) orelse return b.graph.poisonCache();
     }
+}
+
+/// `sub` under the build root. 0.17 dropped Build.pathFromRoot (forGeo).
+fn rootPath(b: *std.Build, sub: []const u8) []const u8 {
+    if (comptime @hasDecl(std.Build, "pathFromRoot")) return b.pathFromRoot(sub);
+    return b.root.joinString(b.allocator, sub) catch @panic("OOM");
 }
