@@ -97,6 +97,18 @@ MACOS_MIN ?= 26.0
 ifeq ($(UNAME_S),Darwin)
     FC += -mmacosx-version-min=$(MACOS_MIN)
 endif
+
+# No libmvec (as forGeo 72663fc). On glibc Linux the gfortran driver pre-includes
+# glibc's math-vector-fortran.h, so the vectorizer may call libmvec's _ZGV*
+# sin/cos/exp: last-bit differences from scalar libm that depend on vector width
+# and loop tails, and some variants need glibc 2.35. -nostdinc drops that
+# pre-include (-fpre-include=<empty file> does not: the driver adds its own after
+# it); it also drops the intrinsic-module path, so that goes back. On FC, like
+# MACOS_MIN above, so no FFLAGS assignment can clobber it.
+ifeq ($(UNAME_S),Linux)
+  NO_LIBMVEC := -nostdinc -fintrinsic-modules-path $(shell $(FC) -print-file-name=finclude)
+  FC += $(NO_LIBMVEC)
+endif
 UNAME_M  := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)

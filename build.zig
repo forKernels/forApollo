@@ -27,6 +27,7 @@ const std = @import("std");
 /// why `b` has to reach this probe. Branch is on `@hasDecl` -- a feature test,
 /// not a version number.
 fn fileExists(b: *std.Build, path: []const u8) !void {
+    declareDirRead(b, std.fs.path.dirname(path) orelse ".");
     if (comptime @hasDecl(std.fs, "cwd")) {
         return std.fs.cwd().access(path, .{});
     } else {
@@ -223,6 +224,13 @@ pub fn build(b: *std.Build) void {
     // forCUDA, ...) remain external per the no-bundled-deps canon.
     // -----------------------------------------------------------------------
 
+    // Every Zig module compiled into the delivered archive. stack_check: ReleaseSafe
+    // on x86 non-Windows calls __zig_probe_stack (compiler_rt), which the sealed
+    // archive does not carry, so gcc/gfortran consumers fail to link (forGeo
+    // 78c8f5e). pic: so a linX86 consumer can fold the archive into a shared
+    // object; Windows code is position-independent already.
+    const archive_pic: ?bool = if (target.result.os.tag == .windows) null else true;
+
     // GPU dispatch layer (zig/src/*) is a separate module tree. Expose it under
     // the name "gpu_dispatch" so exports.zig can pull it in via @import without
     // crossing module-path boundaries. Lazily analyzed: only referenced under
@@ -231,12 +239,16 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("zig/src/gpu_dispatch.zig"),
         .target = target,
         .optimize = optimize,
+        .stack_check = false,
+        .pic = archive_pic,
     });
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/zig/exports.zig"),
         .target = target,
         .optimize = optimize,
+        .stack_check = false,
+        .pic = archive_pic,
         .link_libc = true,
     });
     root_module.addOptions("build_opts", build_opts);
@@ -372,4 +384,21 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run Zig unit tests");
     test_step.dependOn(&run_tests.step);
+}
+
+/// Declare to 0.17's configure cache that build.zig read `dir`'s entry list, so
+/// an entry appearing or vanishing reconfigures (forSim 54055cd). 0.17 cannot
+/// track a path that does not exist (configure fails: FileSystemFailure), so the
+/// nearest existing ancestor stands in -- its entry list changes when the missing
+/// one appears. No existing ancestor: poison the cache (always reconfigure).
+fn declareDirRead(b: *std.Build, dir: []const u8) void {
+    if (comptime !@hasDecl(std.Build, "dependOnDirectoryContents")) return;
+    var p = dir;
+    while (true) {
+        if (std.Io.Dir.cwd().access(b.graph.io, p, .{})) |_| {
+            b.dependOnDirectoryContents(.{ .cwd_relative = p });
+            return;
+        } else |_| {}
+        p = std.fs.path.dirname(p) orelse return b.graph.poisonCache();
+    }
 }
